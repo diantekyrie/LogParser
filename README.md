@@ -122,6 +122,8 @@ The local dashboard accepts four upload types:
 Uploads can also be grouped into a named bug folder/investigation so one
 local investigation can contain multiple supporting files, such as a
 bugreport ZIP, a raw text log, a packet capture, and an Ellisys artifact.
+The dashboard file picker accepts multiple files at once and uploads each
+as a separate capture under the same bug folder.
 
 ## Why parsers, not RAG
 

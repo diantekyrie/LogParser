@@ -216,7 +216,9 @@ export default function App() {
   const [captures, setCaptures] = useState([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState(null);
   const [summary, setSummary] = useState(null);
-  const [file, setFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [question, setQuestion] = useState("");
@@ -312,21 +314,30 @@ export default function App() {
 
   async function handleUpload(e) {
     e.preventDefault();
-    if (!file || !deviceLabel) return;
+    if (selectedFiles.length === 0 || !deviceLabel) return;
     setBusy(true);
     setError(null);
+    setUploadProgress("");
     try {
-      const form = new FormData();
-      form.append("device_label", deviceLabel);
-      if (investigationLabel.trim()) form.append("investigation_label", investigationLabel.trim());
-      form.append("file", file);
-      const data = await api("/captures", { method: "POST", body: form });
+      let latestCaptureId = null;
+      for (let i = 0; i < selectedFiles.length; i += 1) {
+        const uploadFile = selectedFiles[i];
+        setUploadProgress(`Uploading ${i + 1}/${selectedFiles.length}: ${uploadFile.name}`);
+        const form = new FormData();
+        form.append("device_label", deviceLabel);
+        if (investigationLabel.trim()) form.append("investigation_label", investigationLabel.trim());
+        form.append("file", uploadFile);
+        const data = await api("/captures", { method: "POST", body: form });
+        latestCaptureId = data.capture_id;
+      }
       refreshDevices();
       refreshInvestigations();
       if (investigationLabel.trim()) loadInvestigationCaptures(investigationLabel.trim());
       else loadCaptures(deviceLabel);
-      selectCapture(data.capture_id);
-      setFile(null);
+      if (latestCaptureId) selectCapture(latestCaptureId);
+      setSelectedFiles([]);
+      setFileInputKey((key) => key + 1);
+      setUploadProgress("");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -442,11 +453,21 @@ export default function App() {
               </datalist>
             </label>
             <label>
-              Capture file
-              <input type="file" accept=".zip,.txt,.pcap,.btt" onChange={(e) => setFile(e.target.files[0])} />
+              Capture files
+              <input
+                key={fileInputKey}
+                type="file"
+                accept=".zip,.txt,.pcap,.btt"
+                multiple
+                onChange={(e) => setSelectedFiles(Array.from(e.target.files || []))}
+              />
             </label>
-            <button onClick={handleUpload} disabled={busy || !file || !deviceLabel}>
-              {busy ? "Parsing…" : "Upload & parse"}
+            {selectedFiles.length > 0 && (
+              <p className="muted small">{selectedFiles.length} file(s) selected.</p>
+            )}
+            {uploadProgress && <p className="muted small">{uploadProgress}</p>}
+            <button onClick={handleUpload} disabled={busy || selectedFiles.length === 0 || !deviceLabel}>
+              {busy ? "Parsing..." : selectedFiles.length > 1 ? "Upload & parse all" : "Upload & parse"}
             </button>
           </section>
 
