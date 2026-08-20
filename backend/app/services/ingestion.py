@@ -11,6 +11,7 @@ from pathlib import Path
 from app.parsers import WANTED_SECTIONS, ParsedCapture
 from app.parsers.anr import parse_anr
 from app.parsers.audio_focus import parse_audio_focus
+from app.parsers.battery_stats import parse_battery_uid_stats
 from app.parsers.bt_hci import parse_bt_hci_log
 from app.parsers.crash_events import parse_crash_events
 from app.parsers.device_info import parse_device_info
@@ -85,6 +86,31 @@ def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
         capture.packages = parse_packages(sections["package"])
     else:
         capture.parse_warnings.append("No 'package' dumpsys section found")
+
+    if "batterystats" in sections:
+        capture.battery_uid_stats = parse_battery_uid_stats(sections["batterystats"])
+        # Attribute each UID to a package by matching uid % 100000 against
+        # a known package's appId (appId is user-independent; the modulus
+        # strips the userId*100000 term regardless of which user the UID
+        # belongs to). Real gap found on the first real-data run: several
+        # system appIds (1000, 1001, ...) are shared by a dozen-plus
+        # packages via android:sharedUserId ("com.android.location.fused"
+        # is one of 18 packages sharing appId 1000, the "system" UID) --
+        # attributing that battery entry to whichever one happened to be
+        # first in the dict would misrepresent a shared system UID's
+        # activity as one specific app's. Only attribute when the appId is
+        # unique to exactly one installed package; leave it unattributed
+        # (not guessed) otherwise, same principle as tombstone/native-crash
+        # attribution.
+        app_id_owners: dict[int, list[str]] = {}
+        for p in capture.packages.values():
+            if p.app_id is not None:
+                app_id_owners.setdefault(p.app_id, []).append(p.package)
+        for stat in capture.battery_uid_stats:
+            owners = app_id_owners.get(stat.uid % 100000, [])
+            stat.package = owners[0] if len(owners) == 1 else None
+    else:
+        capture.parse_warnings.append("No 'batterystats' dumpsys section found")
 
     if "media_session" in sections:
         capture.media_sessions = parse_media_sessions(sections["media_session"])

@@ -279,6 +279,32 @@ def test_wifi_association_events_include_roam_flag(capture1):
     assert all(e.roam is not None for e in associations)
 
 
+def test_battery_uid_stats_attributed_to_real_packages(capture1):
+    by_pkg = {s.package: s for s in capture1.battery_uid_stats if s.package}
+    assert "com.disney.disneyplus" in by_pkg
+    assert "ch.protonvpn.android" in by_pkg
+    assert by_pkg["com.disney.disneyplus"].total_mah > 0
+    assert "audio" in by_pkg["com.disney.disneyplus"].components_mah or \
+           "video" in by_pkg["com.disney.disneyplus"].components_mah
+
+    # Regression: appId already includes Android's +10000 offset (verified
+    # against two independent real UIDs); the first parser version dropped
+    # that term, computing uid=358 instead of 10358 for token "u0a358" and
+    # silently failing every attribution.
+    music = by_pkg.get("com.apple.android.music")
+    assert music is not None
+    assert music.uid == 10358
+
+    # Regression: appId 1000 ("system") is shared by 18+ different
+    # packages via android:sharedUserId. Attributing a shared system UID's
+    # battery entry to whichever package happened to be first in the dict
+    # would misrepresent combined system activity as one specific app's --
+    # it must be left unattributed instead.
+    system_uid_entries = [s for s in capture1.battery_uid_stats if s.uid == 1000]
+    assert len(system_uid_entries) == 1
+    assert system_uid_entries[0].package is None
+
+
 def test_second_capture_also_parses_cleanly():
     if not CAPTURE_2.exists():
         pytest.skip("second fixture not present")

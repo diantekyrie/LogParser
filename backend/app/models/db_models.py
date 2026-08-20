@@ -216,6 +216,23 @@ class BtHciEventRow(SQLModel, table=True):
     opcode: Optional[int]
 
 
+class BatteryUidStatRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    uid_token: str
+    uid: int
+    package: Optional[str] = Field(default=None, index=True)
+    total_mah: float
+    fg_mah: Optional[float]
+    bg_mah: Optional[float]
+    fgs_mah: Optional[float]
+    cached_mah: Optional[float]
+    components_mah_json: str
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
 class WifiEventRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)

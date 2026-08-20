@@ -23,6 +23,10 @@ VERSION_LINE_RE = re.compile(
 
 VERSION_NAME_RE = re.compile(r"^\s*versionName=(?P<vn>\S+)\s*$")
 
+# "    appId=10358" -- verified against real data: uid = userId*100000 +
+# appId (appId already includes Android's +10000 app-uid-space offset).
+APP_ID_RE = re.compile(r"^\s*appId=(?P<id>\d+)\s*$")
+
 
 def parse_packages(section: Section) -> dict[str, PackageFacts]:
     lines = section.lines
@@ -38,7 +42,7 @@ def parse_packages(section: Section) -> dict[str, PackageFacts]:
 
         pkg = m.group("pkg")
         header_abs_line = section.line_start + i
-        version_code = min_sdk = target_sdk = None
+        version_code = min_sdk = target_sdk = app_id = None
         version_name = None
         last_field_abs_line = header_abs_line
 
@@ -56,6 +60,10 @@ def parse_packages(section: Section) -> dict[str, PackageFacts]:
             if vnm:
                 version_name = vnm.group("vn")
                 last_field_abs_line = section.line_start + j
+            aim = APP_ID_RE.match(lines[j])
+            if aim:
+                app_id = int(aim.group("id"))
+                last_field_abs_line = section.line_start + j
             j += 1
 
         out[pkg] = PackageFacts(
@@ -64,6 +72,7 @@ def parse_packages(section: Section) -> dict[str, PackageFacts]:
             version_name=version_name,
             min_sdk=min_sdk,
             target_sdk=target_sdk,
+            app_id=app_id,
             source_ref=SourceRef("package", header_abs_line, last_field_abs_line),
         )
         i = j

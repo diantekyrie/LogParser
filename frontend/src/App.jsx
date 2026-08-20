@@ -392,6 +392,28 @@ export default function App() {
                 </section>
               )}
 
+              {summary.top_battery_consumers.length > 0 && (
+                <section className="panel">
+                  <h2>Top battery consumers</h2>
+                  <p className="muted small">Estimated mAh per app/UID for this capture. Package is unattributed (not guessed) for shared system UIDs.</p>
+                  <table className="fact-table">
+                    <thead><tr><th>App / UID</th><th>Total (mAh)</th><th>Breakdown</th><th>Cite</th></tr></thead>
+                    <tbody>
+                      {summary.top_battery_consumers.map((b, i) => (
+                        <tr key={i}>
+                          <td>{b.package ?? <span className="muted">{b.uid_token} (unattributed)</span>}</td>
+                          <td>{b.total_mah.toFixed(2)}</td>
+                          <td className="small">
+                            {Object.entries(b.components_mah).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(", ")}
+                          </td>
+                          <td><SourceTag source={b.source} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+
               {summary.wifi_events.filter((w) => w.kind === "disconnection").length > 0 && (
                 <section className="panel">
                   <h2>Wi-Fi disconnections</h2>

@@ -227,3 +227,28 @@ def test_single_word_brand_name_with_no_space_is_found_when_unique(session):
     matched = {c["package"] for c in result["bundle"]["claims"]}
     assert "ch.protonvpn.android" in matched
     assert "com.disney.disneyplus" in matched
+
+
+def test_battery_question_surfaces_real_per_app_mah_attribution(session):
+    # Regression: this exact question previously came back "no battery
+    # data exists in this bundle" from both live LLM providers -- not
+    # because the capture lacked the data (it has real per-app mAh
+    # attribution the whole time), but because nothing parsed batterystats
+    # or wired it into the bundle at all.
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(
+        session, capture.id, "frankel-pixel",
+        "was the battery drained quickly due to using Disney Plus and ProtonVPN at the same time?",
+    )
+    claims = {c["package"]: c for c in result["bundle"]["claims"]}
+    assert claims["com.disney.disneyplus"]["verified_state"]["battery"]["total_mah"] > 0
+    assert claims["ch.protonvpn.android"]["verified_state"]["battery"]["total_mah"] > 0
+    evidence = result["bundle"]["device_wide_battery_evidence"]
+    assert len(evidence["top_consumers"]) > 0
+    assert evidence["top_consumers"][0]["total_mah"] >= evidence["top_consumers"][-1]["total_mah"]
+    # Regression: "battery" (from this exact question) is the one unique
+    # segment of an unrelated installed app, com.oceanwing.battery.cam --
+    # the user never meant that app, and it must not appear as a matched
+    # entity just because a diagnostic topic word happens to also be a
+    # package fragment.
+    assert "com.oceanwing.battery.cam" not in claims

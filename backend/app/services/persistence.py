@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from app.models.db_models import (
     AnrRow,
+    BatteryUidStatRow,
     BtHciEventRow,
     BtHciSummaryRow,
     Capture,
@@ -187,6 +188,17 @@ def persist_capture(
             source_section=w.source_ref.section,
             source_line_start=w.source_ref.line_start,
             source_line_end=w.source_ref.line_end,
+        ))
+
+    for b in parsed.battery_uid_stats:
+        session.add(BatteryUidStatRow(
+            capture_id=capture.id, uid_token=b.uid_token, uid=b.uid, package=b.package,
+            total_mah=b.total_mah, fg_mah=b.fg_mah, bg_mah=b.bg_mah,
+            fgs_mah=b.fgs_mah, cached_mah=b.cached_mah,
+            components_mah_json=json.dumps(b.components_mah),
+            source_section=b.source_ref.section,
+            source_line_start=b.source_ref.line_start,
+            source_line_end=b.source_ref.line_end,
         ))
 
     freeze_counts: Counter = Counter()

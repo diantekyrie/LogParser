@@ -17,7 +17,7 @@ from sqlmodel import Session
 from sqlmodel import select
 
 from app.llm import get_llm_client
-from app.models.db_models import AnrRow, CrashEventRow, TombstoneRow, WifiEventRow
+from app.models.db_models import AnrRow, BatteryUidStatRow, CrashEventRow, TombstoneRow, WifiEventRow
 from app.services.correlation import PackageHistory, package_history_across_device
 from app.services.verification import EntityVerification, verify_question_entities
 
@@ -28,6 +28,7 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
 
 CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
 WIFI_TRIGGER_RE = re.compile(r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam)\w*\b", re.IGNORECASE)
+BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = """You are a diagnosis-report writer for Android device logs.
 
@@ -61,6 +62,14 @@ numbers). Rules, no exceptions:
    that's every Wi-Fi disconnection event in the capture with its 802.11
    reason code -- Wi-Fi connectivity is device-wide, not per-app, so don't
    expect it to be attributed to any named app.
+8. If the bundle includes a top-level "device_wide_battery_evidence" key,
+   or a claim's verified_state has a "battery" field, that's real
+   estimated-mAh attribution for this one capture, broken down by
+   component (cpu/screen/audio/wifi/mobile_radio/wakelock/etc). It is a
+   snapshot for the capture's stats window, not a measured cause-and-effect
+   link to any specific user-reported symptom -- report the numbers
+   plainly and let them speak for themselves rather than asserting they
+   "caused" drain unless the bundle itself frames it that way.
 """
 
 
@@ -110,6 +119,7 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
             "unfreeze_count": ev.unfreeze_count,
             "native_crashes": ev.tombstones,
             "anrs": ev.anrs,
+            "battery": ev.battery,
         },
     }
     if history is not None:
@@ -213,6 +223,38 @@ def diagnose(
                  "confidence": wifi_confidence, "corroboration": wifi_corroboration,
                  "source": {"section": w.source_section, "line_start": w.source_line_start, "line_end": w.source_line_end}}
                 for w in disconnections
+            ],
+        }
+
+    if BATTERY_TRIGGER_RE.search(question):
+        # Battery attribution is per-UID, not automatically tied to a named
+        # app in the question -- surfaced device-wide (top consumers) so a
+        # battery question always gets real evidence, same principle as
+        # crash/wifi triggers. Live-tested gap this closes: a battery-drain
+        # question naming two apps used to come back "no battery data
+        # exists in this bundle" even when the parsed capture had real
+        # per-app mAh attribution the whole time -- there was simply no
+        # battery-stats parser wiring it into the bundle at all.
+        battery_confidence, battery_corroboration = score_confidence(1, 1)
+        top_consumers = session.exec(
+            select(BatteryUidStatRow)
+            .where(BatteryUidStatRow.capture_id == capture_id)
+            .order_by(BatteryUidStatRow.total_mah.desc())
+            .limit(15)
+        ).all()
+        bundle["device_wide_battery_evidence"] = {
+            "note": (
+                "Top battery consumers by estimated mAh for this capture, not filtered to a "
+                "named app. `package` is null for UIDs that are shared by multiple system "
+                "packages (e.g. the \"system\" UID) or have no matching installed package -- "
+                "attribution is not guessed in that case."
+            ),
+            "top_consumers": [
+                {"package": b.package, "uid_token": b.uid_token, "total_mah": b.total_mah,
+                 "components_mah": json.loads(b.components_mah_json),
+                 "confidence": battery_confidence, "corroboration": battery_corroboration,
+                 "source": {"section": b.source_section, "line_start": b.source_line_start, "line_end": b.source_line_end}}
+                for b in top_consumers
             ],
         }
 

@@ -12,6 +12,7 @@ from sqlmodel import Session, func, select
 
 from app.models.db_models import (
     AnrRow,
+    BatteryUidStatRow,
     BtHciEventRow,
     BtHciSummaryRow,
     Capture,
@@ -102,6 +103,12 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     ).all()
     wifi_event_rows = session.exec(
         select(WifiEventRow).where(WifiEventRow.capture_id == capture_id)
+    ).all()
+    battery_rows = session.exec(
+        select(BatteryUidStatRow)
+        .where(BatteryUidStatRow.capture_id == capture_id)
+        .order_by(BatteryUidStatRow.total_mah.desc())
+        .limit(15)
     ).all()
 
     timeline = []
@@ -219,6 +226,14 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                 "locally_generated": w.locally_generated, "roam": w.roam,
                 "source": _source(w.source_section, w.source_line_start, w.source_line_end),
             } for w in wifi_event_rows
+        ],
+        "top_battery_consumers": [
+            {
+                "package": b.package, "uid_token": b.uid_token, "total_mah": b.total_mah,
+                "fg_mah": b.fg_mah, "bg_mah": b.bg_mah, "fgs_mah": b.fgs_mah, "cached_mah": b.cached_mah,
+                "components_mah": json.loads(b.components_mah_json),
+                "source": _source(b.source_section, b.source_line_start, b.source_line_end),
+            } for b in battery_rows
         ],
         "timeline": timeline,
         "media_sessions": [

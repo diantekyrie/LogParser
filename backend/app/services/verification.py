@@ -10,6 +10,7 @@ supports the story the question implies.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -17,6 +18,7 @@ from sqlmodel import Session, select
 
 from app.models.db_models import (
     AnrRow,
+    BatteryUidStatRow,
     Capture,
     CrashEventRow,
     FocusEventRow,
@@ -40,6 +42,17 @@ GENERIC_SEGMENTS = {
 STOPWORDS = {
     "the", "and", "for", "was", "did", "has", "have", "not", "with", "that",
     "this", "when", "what", "why", "how", "app", "apps",
+    # Diagnostic topic words (mirrors reasoning.py's *_TRIGGER_RE keyword
+    # sets): a question using these is almost always talking ABOUT a
+    # symptom category, not naming a brand -- but they can coincidentally
+    # exact-match some installed app's package id anyway. Real case found
+    # live: "battery" (from "was the battery drained...") is the one
+    # unique, non-generic segment of com.oceanwing.battery.cam, which the
+    # single-word-uniqueness rule then trusted as a real match even though
+    # the user never meant that app.
+    "battery", "drain", "drained", "draining", "power", "mah",
+    "crash", "crashed", "crashing", "anr", "fatal", "tombstone",
+    "wifi", "wlan", "disconnect", "disconnected", "dropped", "drop", "roam",
 }
 
 
@@ -60,6 +73,7 @@ class EntityVerification:
     unfreeze_count: int
     tombstones: list[dict]             # native crashes attributed to this package
     anrs: list[dict]                   # ANRs attributed to this package
+    battery: dict | None               # per-app battery attribution (mAh), if any
     corroborating_fact_count: int
 
 
@@ -183,7 +197,13 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
         )
     ).all()
 
-    corroborating = sum(x is not None for x in (focus_top, media, latest_event, pkg_fact))
+    battery_row = session.exec(
+        select(BatteryUidStatRow).where(
+            BatteryUidStatRow.capture_id == capture_id, BatteryUidStatRow.package == package
+        )
+    ).first()
+
+    corroborating = sum(x is not None for x in (focus_top, media, latest_event, pkg_fact, battery_row))
     corroborating += len(crash_rows) + len(tombstone_rows) + len(anr_rows)
     if freeze_summary is not None:
         corroborating += 1
@@ -231,6 +251,15 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
             {"filename": a.filename, "timestamp": a.timestamp, "reason": a.reason, "subject": a.subject}
             for a in anr_rows
         ],
+        battery=(
+            {
+                "total_mah": battery_row.total_mah, "fg_mah": battery_row.fg_mah,
+                "bg_mah": battery_row.bg_mah, "fgs_mah": battery_row.fgs_mah,
+                "cached_mah": battery_row.cached_mah,
+                "components_mah": json.loads(battery_row.components_mah_json),
+                "source": {"section": battery_row.source_section, "line_start": battery_row.source_line_start, "line_end": battery_row.source_line_end},
+            } if battery_row else None
+        ),
         corroborating_fact_count=corroborating,
     )
 

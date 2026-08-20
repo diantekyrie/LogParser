@@ -17,7 +17,7 @@ from app.parsers.base import (
 
 WANTED_SECTIONS = {
     "audio", "package", "media_session", "activity", "system_log",
-    "system_properties", "preamble", "wifi",
+    "system_properties", "preamble", "wifi", "batterystats",
 }
 
 __all__ = [

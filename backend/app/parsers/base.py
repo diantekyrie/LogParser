@@ -62,6 +62,9 @@ class PackageFacts:
     version_name: Optional[str]
     min_sdk: Optional[int]
     target_sdk: Optional[int]
+    app_id: Optional[int]   # from "appId=NNNNN" -- lets other UID-keyed
+                             # sections (e.g. battery stats) be attributed
+                             # back to a package: uid = userId*100000 + appId
     source_ref: SourceRef
 
 
@@ -282,6 +285,35 @@ class WifiEvent:
 
 
 @dataclass
+class BatteryUidStats:
+    """One `UID <token>: <mAh> [fg: ...] [bg: ...] [fgs: ...] [cached: ...]`
+    entry from `DUMP OF SERVICE batterystats` -> "Estimated power use
+    (mAh):" -- per-app/per-uid battery attribution, broken down by
+    foreground/background/foreground-service/cached state and by
+    component (cpu, screen, audio, wifi, mobile_radio, wakelock, camera,
+    video, sensors, gnss).
+
+    `uid` is the real numeric UID (parsed from either a raw integer token
+    like "1000", or a "u<userId>a<appId>" token, converted via
+    uid = userId*100000 + appId -- verified against real data). `package`
+    is filled in downstream by matching `uid % 100000` against a known
+    package's `appId` (see app/services/ingestion.py); it stays None for
+    system UIDs that aren't any installed app's appId.
+    """
+
+    uid_token: str
+    uid: int
+    package: Optional[str]
+    total_mah: float
+    fg_mah: Optional[float]
+    bg_mah: Optional[float]
+    fgs_mah: Optional[float]
+    cached_mah: Optional[float]
+    components_mah: dict          # {"cpu": 7.05, "audio": 28.8, "wifi": 0.033, ...}
+    source_ref: SourceRef
+
+
+@dataclass
 class ParsedCapture:
     """Everything a capture's ingestion pipeline produced, ground-truth facts only."""
 
@@ -296,5 +328,6 @@ class ParsedCapture:
     anrs: list[AnrFacts] = field(default_factory=list)
     bt_hci_summary: Optional[BtHciSummary] = None
     wifi_events: list[WifiEvent] = field(default_factory=list)
+    battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)
