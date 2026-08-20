@@ -103,11 +103,31 @@ def extract_candidate_packages(question: str, known_packages: list[str]) -> list
         ordered_words[i] + ordered_words[i + 1] for i in range(len(ordered_words) - 1)
     }
 
-    for pkg in known_packages:
-        segments = {s for s in pkg.lower().split(".") if s not in GENERIC_SEGMENTS}
+    all_segments = [
+        {s for s in pkg.lower().split(".") if s not in GENERIC_SEGMENTS}
+        for pkg in known_packages
+    ]
+
+    for pkg, segments in zip(known_packages, all_segments):
         hits = words & segments
         if len(hits) >= 2 or (adjacent_concat & segments):
             found.add(pkg)
+            continue
+        # A single-word exact match is also trusted, but only when that
+        # segment is unique to this one package among everything installed.
+        # Real gap found live: "ProtonVPN" (no space) is one word that
+        # exactly equals ch.protonvpn.android's one non-generic segment,
+        # but the >=2-hit rule discarded it as a lone match. Requiring
+        # uniqueness (rather than just "any single hit") keeps generic
+        # single words like "music" -- which legitimately appears in
+        # multiple installed packages' segments -- from over-matching every
+        # app that happens to share it; a real brand token that only one
+        # app's package id contains is not that kind of coincidence.
+        if hits:
+            hit = next(iter(hits))
+            owners = sum(1 for other in all_segments if hit in other)
+            if owners == 1:
+                found.add(pkg)
 
     return sorted(found)
 

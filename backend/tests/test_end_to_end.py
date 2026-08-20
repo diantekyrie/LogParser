@@ -208,3 +208,22 @@ def test_two_word_brand_names_concatenated_in_package_ids_are_found(session):
     assert claims["ch.protonvpn.android"]["verified_state"]["freeze_count"] > 0
     for c in claims.values():
         assert c["confidence"] in {"LOW", "MEDIUM"}  # never HIGH from single-capture, non-cross-checked facts
+
+
+def test_single_word_brand_name_with_no_space_is_found_when_unique(session):
+    # Regression, found live immediately after the two-word fix above:
+    # "ProtonVPN" typed as ONE word (no space) exactly equals
+    # ch.protonvpn.android's one non-generic segment, but the >=2-hit rule
+    # still discarded it since a single word only produces 1 hit. Fixed by
+    # trusting a lone exact-segment match when that segment is unique to
+    # one installed package (unlike a generic word such as "music", which
+    # legitimately appears in multiple installed packages' segments and
+    # must still require a second word to disambiguate).
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(
+        session, capture.id, "frankel-pixel",
+        "was the battery drained quickly due to using Disney Plus and ProtonVPN at the same time?",
+    )
+    matched = {c["package"] for c in result["bundle"]["claims"]}
+    assert "ch.protonvpn.android" in matched
+    assert "com.disney.disneyplus" in matched
