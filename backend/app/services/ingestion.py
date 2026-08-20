@@ -27,7 +27,26 @@ from app.parsers.wifi import parse_wifi_events
 
 TOMBSTONE_PREFIX = "FS/data/tombstones/"
 ANR_PREFIX = "FS/data/anr/"
-BT_HCI_LOG_PATH = "FS/data/misc/bluetooth/logs/btsnooz_hci.log"
+BT_HCI_LOG_DIR = "FS/data/misc/bluetooth/logs/"
+# Real gap found live: both real test bugreports (a Pixel phone and a Pixel
+# Watch, different Android builds) ship this file as
+# "btsnoop_hci.log.filtered", not "btsnooz_hci.log" -- the one hardcoded
+# path this parser originally looked for. That name never matched, so the
+# HCI parser silently never ran on either real capture despite a real,
+# valid 4MB+ classic-btsnoop log sitting in the zip the whole time; the
+# "No Bluetooth HCI snoop log found" warning was a false negative, not a
+# true absence. OEM/build variation in this filename (.filtered, .last
+# rotated copies, no suffix at all) means a single hardcoded name isn't
+# reliable -- search the directory instead and verify by magic bytes
+# (parse_bt_hci_log already returns None on a non-match), preferring the
+# primary log over a ".last" rotated copy.
+BT_HCI_LOG_CANDIDATES = (
+    "btsnoop_hci.log.filtered",
+    "btsnoop_hci.log",
+    "btsnooz_hci.log",
+    "btsnoop_hci.log.filtered.last",
+    "btsnoop_hci.log.last",
+)
 
 
 def _zip_entry_modified_at(info: zipfile.ZipInfo) -> str:
@@ -144,8 +163,16 @@ def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
         capture.anrs = parse_anrs(zf)
 
         names = set(zf.namelist())
-        if BT_HCI_LOG_PATH in names:
-            capture.bt_hci_summary = parse_bt_hci_log(zf.read(BT_HCI_LOG_PATH))
+        bt_hci_path = next(
+            (BT_HCI_LOG_DIR + name for name in BT_HCI_LOG_CANDIDATES if BT_HCI_LOG_DIR + name in names),
+            None,
+        )
+        if bt_hci_path is not None:
+            capture.bt_hci_summary = parse_bt_hci_log(zf.read(bt_hci_path))
+            if capture.bt_hci_summary is None:
+                capture.parse_warnings.append(
+                    f"Found '{bt_hci_path}' but it did not match the expected btsnoop binary format"
+                )
         else:
             capture.parse_warnings.append("No Bluetooth HCI snoop log found")
 

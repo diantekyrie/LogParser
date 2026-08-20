@@ -1,10 +1,13 @@
-"""Parser for the on-device Bluetooth HCI snoop log
-(FS/data/misc/bluetooth/logs/btsnooz_hci.log inside the bugreport zip --
-a separate binary file, not text inside the flattened bugreport txt).
+"""Parser for the on-device Bluetooth HCI snoop log (a file somewhere under
+FS/data/misc/bluetooth/logs/ inside the bugreport zip -- a separate binary
+file, not text inside the flattened bugreport txt). The exact filename
+varies by OEM/build -- seen in the wild as "btsnooz_hci.log",
+"btsnoop_hci.log.filtered", and rotated ".last" copies of either -- see
+BT_HCI_LOG_CANDIDATES in ingestion.py, which searches for all of them.
 
-Despite the filename ("btsnooz", with an extra z -- Android's name for a
-compressed, bugreport-inline HCI log variant documented in AOSP's
-btsnooz.py), the actual file bytes here were verified directly against the
+Despite some of those names ("btsnooz", with an extra z -- Android's name
+for a compressed, bugreport-inline HCI log variant documented in AOSP's
+btsnooz.py), every real file seen so far has verified directly against the
 classic `btsnoop` binary format (RFC-adjacent, used by Wireshark and the
 original Symbian/Nokia btsnoop tool), not the compressed variant:
 

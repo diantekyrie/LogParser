@@ -359,3 +359,42 @@ def test_second_capture_also_parses_cleanly():
     cap2 = parse_bugreport_zip(CAPTURE_2)
     assert cap2.parse_warnings == []
     assert len(cap2.packages) > 0
+
+
+def _minimal_btsnoop_bytes() -> bytes:
+    import struct
+    header = b"btsnoop\x00" + struct.pack(">II", 1, 1002)
+    payload = bytes([0x01, 0x03, 0x0C, 0x00])  # H4 command, arbitrary opcode/len
+    record = struct.pack(">IIIIQ", len(payload), len(payload), 0, 0, 0x00DCDDB30F2F8000) + payload
+    return header + record
+
+
+def test_bt_hci_log_found_under_real_world_filename_variant(tmp_path):
+    # Real gap found live against two actual bugreports (a Pixel phone and a
+    # Pixel Watch, neither the committed test fixture): the HCI log ships as
+    # "btsnoop_hci.log.filtered", not "btsnooz_hci.log" -- the only name
+    # ingestion.py originally looked for. Both real captures had a valid,
+    # multi-thousand-packet HCI log sitting in the zip that silently never
+    # got parsed; "No Bluetooth HCI snoop log found" was a false negative.
+    # This builds a minimal zip using that real-world filename to make sure
+    # the fix (searching BT_HCI_LOG_CANDIDATES) doesn't regress.
+    import zipfile
+
+    zip_path = tmp_path / "synthetic_bugreport.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "bugreport-synthetic-2026-01-01-00-00-00.txt",
+            "------ SYSTEM PROPERTIES (getprop) ------\n"
+            "[ro.build.version.release]: [15]\n"
+            "------ 0.000s was the duration of 'SYSTEM PROPERTIES' ------\n",
+        )
+        zf.writestr(
+            "FS/data/misc/bluetooth/logs/btsnoop_hci.log.filtered",
+            _minimal_btsnoop_bytes(),
+        )
+
+    cap = parse_bugreport_zip(zip_path)
+    assert "No Bluetooth HCI snoop log found" not in cap.parse_warnings
+    assert cap.bt_hci_summary is not None
+    assert cap.bt_hci_summary.total_packets == 1
+    assert cap.bt_hci_summary.command_count == 1
