@@ -24,6 +24,7 @@ from app.models.db_models import (
     FreezeSummaryRow,
     MediaSessionRow,
     PackageFactRow,
+    PacketCaptureSummaryRow,
     TombstoneRow,
     WifiEventRow,
 )
@@ -97,6 +98,9 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     ).all()
     bt_summary_row = session.exec(
         select(BtHciSummaryRow).where(BtHciSummaryRow.capture_id == capture_id)
+    ).first()
+    packet_summary_row = session.exec(
+        select(PacketCaptureSummaryRow).where(PacketCaptureSummaryRow.capture_id == capture_id)
     ).first()
     bt_event_rows = session.exec(
         select(BtHciEventRow).where(BtHciEventRow.capture_id == capture_id)
@@ -218,6 +222,20 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                     if e.kind == "disconnection_complete" or (e.status_code or 0) != 0
                 ],
             } if bt_summary_row else None
+        ),
+        "packet_capture_summary": (
+            {
+                "format": packet_summary_row.format,
+                "linktype": packet_summary_row.linktype,
+                "linktype_name": packet_summary_row.linktype_name,
+                "total_packets": packet_summary_row.total_packets,
+                "captured_bytes": packet_summary_row.captured_bytes,
+                "original_bytes": packet_summary_row.original_bytes,
+                "first_timestamp": packet_summary_row.first_timestamp,
+                "last_timestamp": packet_summary_row.last_timestamp,
+                "truncated_packets": packet_summary_row.truncated_packets,
+                "malformed_packets": packet_summary_row.malformed_packets,
+            } if packet_summary_row else None
         ),
         "wifi_events": [
             {

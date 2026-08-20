@@ -263,6 +263,27 @@ class BtHciSummary:
 
 
 @dataclass
+class PacketCaptureSummary:
+    """Generic packet-capture file facts for direct `.pcap` uploads.
+
+    This is intentionally capture-level metadata rather than packet-by-packet
+    persistence: enough to confirm the file was recognized, bounded, and
+    timestamped before adding protocol-specific decoders.
+    """
+
+    format: str
+    linktype: int
+    linktype_name: str
+    total_packets: int
+    captured_bytes: int
+    original_bytes: int
+    first_timestamp: Optional[str]
+    last_timestamp: Optional[str]
+    truncated_packets: int
+    malformed_packets: int
+
+
+@dataclass
 class WifiEvent:
     """One decoded event from `DUMP OF SERVICE wifi` -> WifiController's
     state-machine transition log (`rec[N]: time=... what=EVENT_NAME ...`).
@@ -327,6 +348,7 @@ class ParsedCapture:
     tombstones: list[TombstoneFacts] = field(default_factory=list)
     anrs: list[AnrFacts] = field(default_factory=list)
     bt_hci_summary: Optional[BtHciSummary] = None
+    packet_capture_summary: Optional[PacketCaptureSummary] = None
     wifi_events: list[WifiEvent] = field(default_factory=list)
     battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None

@@ -73,11 +73,8 @@ def find_main_bugreport_entry(zf: zipfile.ZipFile) -> zipfile.ZipInfo:
     return max(candidates, key=lambda i: i.file_size)
 
 
-def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, Section]:
-    """Stream the main bugreport txt once, returning the last occurrence of
-    each wanted DUMP OF SERVICE section.
-    """
-    entry = find_main_bugreport_entry(zf)
+def extract_sections_from_stream(text_stream, wanted_names: set[str]) -> dict[str, Section]:
+    """Stream flattened bugreport text once, returning wanted sections."""
     results: dict[str, Section] = {}
 
     current: Section | None = None
@@ -85,6 +82,90 @@ def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, S
         current = Section(name=PREAMBLE, priority=None, line_start=1, line_end=1, kind="log")
     line_no = 0
 
+    for line in text_stream:
+        line_no += 1
+        stripped = line.rstrip("\n").rstrip("\r")
+
+        # The preamble has no delimiter of its own -- it ends the moment
+        # ANY section header line appears (wanted or not), and that same
+        # line is then re-examined below as a normal potential section
+        # start.
+        if current is not None and current.name == PREAMBLE:
+            if DUMPSYS_START_RE.match(stripped) or LOG_SECTION_START_RE.match(stripped):
+                current.line_end = line_no - 1
+                results[PREAMBLE] = current
+                current = None
+            else:
+                current.lines.append(stripped)
+                continue
+
+        if current is None:
+            m = DUMPSYS_START_RE.match(stripped)
+            if m and m.group(2) in wanted_names:
+                current = Section(
+                    name=m.group(2),
+                    priority=m.group(1),
+                    line_start=line_no + 1,
+                    line_end=line_no + 1,
+                    kind="dumpsys",
+                )
+                continue
+
+            m2 = LOG_SECTION_START_RE.match(stripped)
+            if m2:
+                mapped = LOG_SECTION_NAME_MAP.get(m2.group(1), m2.group(1).lower().replace(" ", "_"))
+                if mapped in wanted_names:
+                    current = Section(
+                        name=mapped,
+                        priority=None,
+                        line_start=line_no + 1,
+                        line_end=line_no + 1,
+                        kind="log",
+                    )
+            continue
+
+        # We are inside a wanted section; watch for its end marker.
+        end_matched = (
+            DUMPSYS_END_RE.match(stripped) if current.kind == "dumpsys"
+            else LOG_SECTION_END_RE.match(stripped)
+        )
+        if end_matched:
+            current.line_end = line_no - 1
+            if current.kind == "dumpsys":
+                # Keep the LAST occurrence: a fast CRITICAL/HIGH pass
+                # prints early, the full un-prioritized dump later.
+                results[current.name] = current
+            elif current.name not in results:
+                # Keep the FIRST occurrence for log-style sections. A
+                # bugreport can print a second, heavily time-filtered
+                # "SYSTEM LOG" near the very end (e.g. a `-T <recent
+                # timestamp>` trailer covering only the last few
+                # seconds) reusing the same section name -- that's a
+                # small subset, not a fuller version, so overwriting
+                # with it would silently drop the real data.
+                results[current.name] = current
+            current = None
+            continue
+
+        current.lines.append(stripped)
+
+    if current is not None:
+        # File ended mid-section (shouldn't happen in a well-formed bugreport).
+        current.line_end = line_no
+        results[current.name] = current
+
+    return results
+
+
+def extract_sections_from_text(text: str, wanted_names: set[str]) -> dict[str, Section]:
+    return extract_sections_from_stream(io.StringIO(text), wanted_names)
+
+
+def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, Section]:
+    """Stream the main bugreport txt once, returning the last occurrence of
+    each wanted DUMP OF SERVICE section.
+    """
+    entry = find_main_bugreport_entry(zf)
     with zf.open(entry) as raw:
         # newline="\n": split ONLY on '\n', matching how every other tool
         # (grep, the line numbers cited in a hand-inspected bugreport, etc.)
@@ -93,76 +174,4 @@ def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, S
         # '\r' bytes from native crash/tombstone dumps -- that silently
         # drifts every subsequent line number and misattributes citations.
         text_stream = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="\n")
-        for line in text_stream:
-            line_no += 1
-            stripped = line.rstrip("\n").rstrip("\r")
-
-            # The preamble has no delimiter of its own -- it ends the moment
-            # ANY section header line appears (wanted or not), and that same
-            # line is then re-examined below as a normal potential section
-            # start.
-            if current is not None and current.name == PREAMBLE:
-                if DUMPSYS_START_RE.match(stripped) or LOG_SECTION_START_RE.match(stripped):
-                    current.line_end = line_no - 1
-                    results[PREAMBLE] = current
-                    current = None
-                else:
-                    current.lines.append(stripped)
-                    continue
-
-            if current is None:
-                m = DUMPSYS_START_RE.match(stripped)
-                if m and m.group(2) in wanted_names:
-                    current = Section(
-                        name=m.group(2),
-                        priority=m.group(1),
-                        line_start=line_no + 1,
-                        line_end=line_no + 1,
-                        kind="dumpsys",
-                    )
-                    continue
-
-                m2 = LOG_SECTION_START_RE.match(stripped)
-                if m2:
-                    mapped = LOG_SECTION_NAME_MAP.get(m2.group(1), m2.group(1).lower().replace(" ", "_"))
-                    if mapped in wanted_names:
-                        current = Section(
-                            name=mapped,
-                            priority=None,
-                            line_start=line_no + 1,
-                            line_end=line_no + 1,
-                            kind="log",
-                        )
-                continue
-
-            # We are inside a wanted section; watch for its end marker.
-            end_matched = (
-                DUMPSYS_END_RE.match(stripped) if current.kind == "dumpsys"
-                else LOG_SECTION_END_RE.match(stripped)
-            )
-            if end_matched:
-                current.line_end = line_no - 1
-                if current.kind == "dumpsys":
-                    # Keep the LAST occurrence: a fast CRITICAL/HIGH pass
-                    # prints early, the full un-prioritized dump later.
-                    results[current.name] = current
-                elif current.name not in results:
-                    # Keep the FIRST occurrence for log-style sections. A
-                    # bugreport can print a second, heavily time-filtered
-                    # "SYSTEM LOG" near the very end (e.g. a `-T <recent
-                    # timestamp>` trailer covering only the last few
-                    # seconds) reusing the same section name -- that's a
-                    # small subset, not a fuller version, so overwriting
-                    # with it would silently drop the real data.
-                    results[current.name] = current
-                current = None
-                continue
-
-            current.lines.append(stripped)
-
-    if current is not None:
-        # File ended mid-section (shouldn't happen in a well-formed bugreport).
-        current.line_end = line_no
-        results[current.name] = current
-
-    return results
+        return extract_sections_from_stream(text_stream, wanted_names)

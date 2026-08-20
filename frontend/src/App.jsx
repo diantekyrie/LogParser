@@ -210,7 +210,9 @@ function ClaimCard({ claim }) {
 
 export default function App() {
   const [devices, setDevices] = useState([]);
+  const [investigations, setInvestigations] = useState([]);
   const [deviceLabel, setDeviceLabel] = useState("");
+  const [investigationLabel, setInvestigationLabel] = useState("");
   const [captures, setCaptures] = useState([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -231,7 +233,12 @@ export default function App() {
     api("/devices").then(setDevices).catch(() => {});
   }, []);
 
+  const refreshInvestigations = useCallback(() => {
+    api("/investigations").then(setInvestigations).catch(() => {});
+  }, []);
+
   useEffect(() => { refreshDevices(); }, [refreshDevices]);
+  useEffect(() => { refreshInvestigations(); }, [refreshInvestigations]);
 
   useEffect(() => {
     api("/llm/providers").then((ps) => {
@@ -267,6 +274,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadInvestigationCaptures = useCallback((label) => {
+    if (!label) {
+      loadCaptures(deviceLabel);
+      return;
+    }
+    const seq = ++captureLookupSeq.current;
+    api(`/investigations/${encodeURIComponent(label)}/captures`)
+      .then((cs) => {
+        if (seq !== captureLookupSeq.current) return;
+        setCaptures(cs);
+        setError(null);
+        if (cs.length > 0) selectCapture(cs[cs.length - 1].id);
+      })
+      .catch(() => {
+        if (seq !== captureLookupSeq.current) return;
+        setCaptures([]);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceLabel, loadCaptures]);
+
   function selectCapture(id) {
     setSelectedCaptureId(id);
     setDiagnosis(null);
@@ -291,10 +318,13 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("device_label", deviceLabel);
+      if (investigationLabel.trim()) form.append("investigation_label", investigationLabel.trim());
       form.append("file", file);
       const data = await api("/captures", { method: "POST", body: form });
       refreshDevices();
-      loadCaptures(deviceLabel);
+      refreshInvestigations();
+      if (investigationLabel.trim()) loadInvestigationCaptures(investigationLabel.trim());
+      else loadCaptures(deviceLabel);
       selectCapture(data.capture_id);
       setFile(null);
     } catch (err) {
@@ -388,15 +418,32 @@ export default function App() {
               <input
                 type="text" list="known-devices" placeholder="e.g. frankel-pixel"
                 value={deviceLabel}
-                onChange={(e) => { setDeviceLabel(e.target.value); loadCaptures(e.target.value); }}
+                onChange={(e) => {
+                  setDeviceLabel(e.target.value);
+                  if (!investigationLabel) loadCaptures(e.target.value);
+                }}
               />
               <datalist id="known-devices">
                 {devices.map((d) => <option key={d.id} value={d.label} />)}
               </datalist>
             </label>
             <label>
-              Bugreport .zip
-              <input type="file" accept=".zip" onChange={(e) => setFile(e.target.files[0])} />
+              Bug folder
+              <input
+                type="text" list="known-investigations" placeholder="e.g. wifi-drop-at-hotel"
+                value={investigationLabel}
+                onChange={(e) => {
+                  setInvestigationLabel(e.target.value);
+                  loadInvestigationCaptures(e.target.value);
+                }}
+              />
+              <datalist id="known-investigations">
+                {investigations.map((i) => <option key={i.id} value={i.label} />)}
+              </datalist>
+            </label>
+            <label>
+              Capture file
+              <input type="file" accept=".zip,.txt,.pcap,.btt" onChange={(e) => setFile(e.target.files[0])} />
             </label>
             <button onClick={handleUpload} disabled={busy || !file || !deviceLabel}>
               {busy ? "Parsing…" : "Upload & parse"}
@@ -556,6 +603,25 @@ export default function App() {
                       </table>
                     </>
                   )}
+                </section>
+              )}
+
+              {summary.packet_capture_summary && (
+                <section className="panel">
+                  <h2>Packet capture</h2>
+                  <div className="stat-grid">
+                    <StatCard label="Format" value={summary.packet_capture_summary.format.toUpperCase()} tone="default" />
+                    <StatCard label="Packets" value={summary.packet_capture_summary.total_packets} tone="default" />
+                    <StatCard label="Captured bytes" value={summary.packet_capture_summary.captured_bytes} tone="default" />
+                    <StatCard label="Truncated packets" value={summary.packet_capture_summary.truncated_packets} tone={summary.packet_capture_summary.truncated_packets > 0 ? "warning" : "ok"} />
+                    <StatCard label="Malformed records" value={summary.packet_capture_summary.malformed_packets} tone={summary.packet_capture_summary.malformed_packets > 0 ? "critical" : "ok"} />
+                  </div>
+                  <p className="muted small">
+                    {summary.packet_capture_summary.linktype_name} ({summary.packet_capture_summary.linktype})
+                    {summary.packet_capture_summary.first_timestamp && summary.packet_capture_summary.last_timestamp
+                      ? ` | ${summary.packet_capture_summary.first_timestamp} - ${summary.packet_capture_summary.last_timestamp}`
+                      : ""}
+                  </p>
                 </section>
               )}
 

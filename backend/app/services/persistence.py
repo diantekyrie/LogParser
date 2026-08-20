@@ -23,8 +23,11 @@ from app.models.db_models import (
     FocusStackEntryRow,
     ForegroundServiceRow,
     FreezeSummaryRow,
+    Investigation,
+    InvestigationCaptureLink,
     MediaSessionRow,
     PackageFactRow,
+    PacketCaptureSummaryRow,
     TombstoneRow,
     WifiEventRow,
 )
@@ -41,12 +44,25 @@ def get_or_create_device(session: Session, device_label: str) -> Device:
     return device
 
 
+def get_or_create_investigation(session: Session, investigation_label: str) -> Investigation:
+    investigation = session.exec(
+        select(Investigation).where(Investigation.label == investigation_label)
+    ).first()
+    if investigation is None:
+        investigation = Investigation(label=investigation_label)
+        session.add(investigation)
+        session.commit()
+        session.refresh(investigation)
+    return investigation
+
+
 def persist_capture(
     session: Session,
     device_label: str,
     original_filename: str,
     parsed: ParsedCapture,
     captured_at: datetime | None = None,
+    investigation_label: str | None = None,
 ) -> Capture:
     device = get_or_create_device(session, device_label)
 
@@ -59,6 +75,13 @@ def persist_capture(
     session.add(capture)
     session.commit()
     session.refresh(capture)
+
+    if investigation_label:
+        investigation = get_or_create_investigation(session, investigation_label)
+        session.add(InvestigationCaptureLink(
+            investigation_id=investigation.id,
+            capture_id=capture.id,
+        ))
 
     for e in parsed.focus_stack:
         session.add(FocusStackEntryRow(
@@ -179,6 +202,16 @@ def persist_capture(
                 handle=e.handle, reason_code=e.reason_code, reason_name=e.reason_name,
                 opcode=e.opcode,
             ))
+
+    if parsed.packet_capture_summary is not None:
+        p = parsed.packet_capture_summary
+        session.add(PacketCaptureSummaryRow(
+            capture_id=capture.id, format=p.format, linktype=p.linktype,
+            linktype_name=p.linktype_name, total_packets=p.total_packets,
+            captured_bytes=p.captured_bytes, original_bytes=p.original_bytes,
+            first_timestamp=p.first_timestamp, last_timestamp=p.last_timestamp,
+            truncated_packets=p.truncated_packets, malformed_packets=p.malformed_packets,
+        ))
 
     for w in parsed.wifi_events:
         session.add(WifiEventRow(

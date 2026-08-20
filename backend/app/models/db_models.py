@@ -26,6 +26,19 @@ class Capture(SQLModel, table=True):
     parse_warnings: str = ""                 # newline-joined; empty string = clean parse
 
 
+class Investigation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: str = Field(index=True, unique=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class InvestigationCaptureLink(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    investigation_id: int = Field(foreign_key="investigation.id", index=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True, unique=True)
+    added_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class FocusStackEntryRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)
@@ -214,6 +227,23 @@ class BtHciEventRow(SQLModel, table=True):
     reason_code: Optional[int]
     reason_name: Optional[str]
     opcode: Optional[int]
+
+
+class PacketCaptureSummaryRow(SQLModel, table=True):
+    """One row per direct packet-capture upload."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True, unique=True)
+    format: str
+    linktype: int
+    linktype_name: str
+    total_packets: int
+    captured_bytes: int
+    original_bytes: int
+    first_timestamp: Optional[str]
+    last_timestamp: Optional[str]
+    truncated_packets: int
+    malformed_packets: int
 
 
 class BatteryUidStatRow(SQLModel, table=True):

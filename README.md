@@ -108,6 +108,21 @@ frontend/               React + Vite dashboard: device info panel, stat
                          per-question LLM provider dropdown
 ```
 
+## Upload formats
+
+The local dashboard accepts four upload types:
+
+| Extension | Current support |
+|---|---|
+| `.zip` | Full Android bugreport ZIP ingestion, including flattened bugreport text plus ZIP-contained tombstones, ANRs, and Bluetooth HCI log files. |
+| `.txt` | Direct flattened Android bugreport text ingestion. ZIP-only companion files are not available, so tombstones/ANRs/HCI files are reported as unavailable. |
+| `.pcap` | Classic libpcap container parsing: packet count, byte totals, time range, link type, truncated packet count, and malformed record count. Protocol-level packet decoding is not implemented yet. |
+| `.btt` | Accepted as an Ellisys artifact. If the bytes are actually `btsnoop`/HCI, they are parsed by the existing Bluetooth HCI parser; otherwise the upload is kept as a capture with an explicit warning that native Ellisys `.btt` decoding needs a sample/spec or an Ellisys export to btsnoop/pcap. |
+
+Uploads can also be grouped into a named bug folder/investigation so one
+local investigation can contain multiple supporting files, such as a
+bugreport ZIP, a raw text log, a packet capture, and an Ellisys artifact.
+
 ## Why parsers, not RAG
 
 The section extractor streams the giant flattened bugreport text once and
