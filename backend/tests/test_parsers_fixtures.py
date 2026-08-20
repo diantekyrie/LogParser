@@ -154,6 +154,67 @@ def test_crash_parser_unwraps_caused_by_chain_to_the_real_root_cause():
     assert "MobileKeysApi.initialize" in c.root_cause_frame
 
 
+# Real lines reproducing a second, more subtle bug found via a diagnosis
+# report that came back with an impossible claim (a crash "message" naming
+# the Disney app but a "package" of com.google.android.gms, with a root
+# cause that didn't match anything nearby in the raw log). Three crashes
+# back-to-back with NO gap between them: two genuine Disney crashes (9
+# seconds apart, identical root cause) immediately followed by an unrelated
+# GMS crash. The block-scanner didn't stop at the next "FATAL EXCEPTION:"
+# line, so it read straight through crash #1's boundary into crash #2's
+# Process:/Caused-by lines, then straight through crash #2's boundary into
+# crash #3's -- silently overwriting crash #1's package and root cause with
+# data from a crash that happened over a day later.
+BACK_TO_BACK_CRASH_LINES = """\
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: FATAL EXCEPTION: main
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: Process: com.disney.wdpro.dlr, PID: 16925
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: java.lang.RuntimeException: Unable to create application com.disney.wdpro.dlr.DLRApplication
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: \tat android.app.ActivityThread.main(ActivityThread.java:9613)
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: Caused by: java.lang.RuntimeException: 25
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: \tat com.assaabloy.mobilekeys.common.c.a.dO23852.info(:10365)
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: \tat com.assaabloy.mobilekeys.api.MobileKeysApi.initialize(SourceFile:69)
+08-08 07:47:07.830 10380 16925 16925 E AndroidRuntime: \t... 10 more
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: FATAL EXCEPTION: main
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: Process: com.disney.wdpro.dlr, PID: 18020
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: java.lang.RuntimeException: Unable to create application com.disney.wdpro.dlr.DLRApplication
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: \tat android.app.ActivityThread.main(ActivityThread.java:9613)
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: Caused by: java.lang.RuntimeException: 25
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: \tat com.assaabloy.mobilekeys.common.c.a.dO23852.info(:10365)
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: \tat com.assaabloy.mobilekeys.api.MobileKeysApi.initialize(SourceFile:69)
+08-08 07:47:16.714 10380 18020 18020 E AndroidRuntime: \t... 10 more
+08-09 17:01:32.826 10336 20750 20811 E AndroidRuntime: FATAL EXCEPTION: actvpool[4]
+08-09 17:01:32.826 10336 20750 20811 E AndroidRuntime: Process: com.google.android.gms, PID: 20750
+08-09 17:01:32.826 10336 20750 20811 E AndroidRuntime: java.lang.IllegalArgumentException: Component class com.google.android.gms.findmydevice.spot.e2ee.ui.ExportedSyncOwnerKeyActivityAlias does not exist in com.google.android.gms
+08-09 17:01:32.826 10336 20750 20811 E AndroidRuntime: \tat android.os.Parcel.readException(Parcel.java:3278)
+""".splitlines()
+
+
+def test_crash_parser_stops_at_next_fatal_exception_boundary():
+    section = Section(name="system_log", priority=None, line_start=1000,
+                       line_end=1000 + len(BACK_TO_BACK_CRASH_LINES) - 1,
+                       lines=BACK_TO_BACK_CRASH_LINES, kind="log")
+    crashes = parse_crash_events(section)
+    assert len(crashes) == 3
+
+    first, second, third = crashes
+    for c in (first, second):
+        assert c.package == "com.disney.wdpro.dlr"
+        assert c.exception_class == "java.lang.RuntimeException"
+        assert c.root_cause_class == "java.lang.RuntimeException"
+        assert c.root_cause_message == "25"
+        assert "MobileKeysApi.initialize" not in c.root_cause_frame  # first frame under Caused by, not the second
+        assert "dO23852.info" in c.root_cause_frame
+
+    assert third.package == "com.google.android.gms"
+    assert third.exception_class == "java.lang.IllegalArgumentException"
+    assert third.root_cause_class is None  # no "Caused by:" in this crash's own block
+
+    # Each crash's citation must end at ITS OWN last line, not bleed into
+    # the next crash's lines.
+    assert first.source_ref.line_end < second.source_ref.line_start
+    assert second.source_ref.line_end < third.source_ref.line_start
+
+
 def test_second_capture_also_parses_cleanly():
     if not CAPTURE_2.exists():
         pytest.skip("second fixture not present")

@@ -64,6 +64,18 @@ def parse_crash_events(section: Section) -> list[CrashEvent]:
             if not m2:
                 break  # crash block ends where consecutive AndroidRuntime lines end
             rest = m2.group("rest")
+
+            if FATAL_RE.match(rest):
+                # A new crash starts here -- stop. Crashes can be
+                # back-to-back with no gap (e.g. an app crashing twice in
+                # under 10 seconds), and without this check the inner scan
+                # ran straight through the boundary into a LATER, unrelated
+                # crash's Process:/Caused-by lines and silently overwrote
+                # this crash's package and root cause with the wrong
+                # crash's data. The outer loop still visits this line on
+                # its own and parses it as its own CrashEvent.
+                break
+
             end_line = section.line_start + j
 
             pm = PROCESS_RE.match(rest)
