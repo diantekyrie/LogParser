@@ -117,8 +117,8 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
         "\n\nWrite a diagnosis report answering the question above using only these facts."
     )
 
-    llm = get_llm_client()
     try:
+        llm = get_llm_client()
         report_text = llm.narrate(SYSTEM_PROMPT, user_prompt)
         llm_error = None
     except Exception as exc:  # noqa: BLE001 -- LLM narration is a convenience
