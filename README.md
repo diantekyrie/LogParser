@@ -44,25 +44,50 @@ backend/
       device_info.py         plain-text preamble + SYSTEM PROPERTIES
                               (getprop) -> manufacturer/model/build/
                               security patch/kernel/serial/etc.
+      tombstone.py            parses tombstone file CONTENT (not just the
+                              filename) from FS/data/tombstones/ --
+                              signal/code/fault addr, top backtrace frame,
+                              and package attribution derived from Cmdline
+                              (null, not guessed, for native binaries)
+      anr.py                  parses ANR trace files from FS/data/anr/ --
+                              the `Subject:` header line alone gives pid,
+                              package, and failure reason
+      bt_hci.py                parses the on-device Bluetooth HCI snoop log
+                              (FS/data/misc/bluetooth/logs/btsnooz_hci.log)
+                              -- real binary `btsnoop` framing (verified
+                              byte-for-byte against the actual file, not
+                              assumed from the misleading "btsnooz"
+                              filename), decoding connection/disconnection/
+                              command complete/status events with HCI
+                              status-code names from the Bluetooth Core Spec
+      wifi.py                 DUMP OF SERVICE wifi -> WifiController/
+                              ClientModeImpl state machine log: Wi-Fi
+                              disconnection events with IEEE 802.11 reason
+                              codes, BSSID association/roam events
     services/
       ingestion.py       wires zip -> sections -> parsers -> ParsedCapture;
-                          also lists tombstone (native crash) files
-                          directly from the zip's own file listing
+                          also reads and parses tombstone/ANR files and the
+                          Bluetooth HCI log directly from the zip's own
+                          file listing (separate files, not text inside the
+                          flattened bugreport txt)
       persistence.py     ParsedCapture -> DB rows (facts, not raw blobs)
       correlation.py     multi-capture history queries for one device
       verification.py    independently verifies every app named in a
                           question before any narrative is built --
                           focus stack, media session, targetSdk, its own
-                          crash events, freeze/unfreeze counts
+                          crash events, freeze/unfreeze counts, its own
+                          ANRs and native crashes (tombstones)
       reasoning.py        assembles verified facts + computed confidence
                           into a bundle, hands it to the selected LLM
                           provider to narrate. Crash-shaped questions
                           (crash/ANR/fatal/tombstone) get device-wide
-                          crash evidence even when no app is named.
+                          crash/ANR/native-crash evidence even when no
+                          app is named.
       summary.py          assembles one capture's dashboard payload:
                           device info, fact counts, top freeze/unfreeze
-                          offenders, crash table, a merged chronological
-                          timeline -- all reads of already-persisted rows
+                          offenders, crash/ANR/tombstone tables, Bluetooth
+                          HCI summary, a merged chronological timeline --
+                          all reads of already-persisted rows
     llm/                LLMClient interface with four selectable
                          providers (see "LLM providers" below); every
                          implementation only narrates an already-verified
@@ -114,6 +139,19 @@ clean to expose them):
    within 10 seconds) caused the scanner to read straight through the
    boundary into a later, unrelated crash's data and silently overwrite the
    first crash's package and root cause with the wrong crash's fields.
+4. Some tombstones omit `ppid:` from the pid/tid header line entirely (a
+   real format variant, not malformed data) -- a regex that required it
+   silently failed to extract pid/tid for those tombstones.
+5. The Bluetooth HCI log's binary framing was initially assumed from the
+   file's misleading name ("btsnooz", suggesting AOSP's compressed
+   bugreport-inline variant) rather than verified. The first byte-offset
+   guess produced identical, clearly-wrong values for both TX and RX
+   packets; decoding was only trusted once independently verified against
+   the real bytes: H4 type-byte distribution, decoded HCI event codes/
+   statuses were all self-consistent with known Bluetooth Core Spec
+   semantics, and decoded timestamps landed within minutes of the
+   bugreport's own capture time (an earlier epoch-delta constant decoded
+   them to 1996).
 
 ## Independent verification
 
@@ -213,12 +251,30 @@ cd backend
 pytest -q
 ```
 
+## Bluetooth / Wi-Fi: what's decoded vs. not
+
+`bt_hci.py` decodes the diagnostically load-bearing HCI event types per-record
+(Connection Complete, Disconnection Complete, Command Complete, Command
+Status, LE Connection Complete), with HCI status/reason codes named from the
+Bluetooth Core Spec. Everything else is counted by event code
+(`event_code_counts`) without per-record decoding -- this is HCI-framing-level
+visibility (connections, disconnects, command failures), not a full L2CAP/
+profile-level protocol dissector.
+
+`wifi.py` decodes `DUMP OF SERVICE wifi`'s WifiController/ClientModeImpl
+state-machine transition log: disconnection events with their IEEE 802.11
+reason code (named from the spec, e.g. "Deauthenticated: station leaving"),
+and BSSID association/roam events. The state machine log has dozens of other
+event types (AP capability updates, screen state, scan requests, ...) not
+decoded here since they carry no connectivity-failure signal.
+
 ## Explicitly out of scope for this MVP
 
-- Bluetooth HCI snoop / Wi-Fi driver log parsing (the underserved wedge --
-  build once this pipeline and architecture are proven).
 - Team accounts, SSO, billing tiers.
-- ANR (Application Not Responding) parsing, and tombstone (native crash)
-  *content* parsing -- tombstone files are currently only listed by
-  filename/timestamp from the zip, not parsed for which app/signal/fault
-  they represent.
+- Full Bluetooth L2CAP/profile-level protocol decoding beyond core HCI
+  framing (see above).
+- Wi-Fi driver-level logs (wpa_supplicant.log, kernel driver traces) --
+  `wifi.py` covers the framework-level `dumpsys wifi` state machine log,
+  which is where connect/disconnect/roam events actually live in a
+  bugreport; no driver-level log file was found in the bugreports tested
+  against to build a lower-level parser against.

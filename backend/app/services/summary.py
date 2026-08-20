@@ -1,14 +1,19 @@
 """Builds the dashboard summary for one capture: device info, fact counts,
 top freeze/unfreeze offenders, and a merged chronological timeline of
-everything with a timestamp (crashes, freeze/unfreeze, focus events). All
-of it reads back rows already persisted at ingestion time -- nothing here
-re-parses the bugreport.
+everything with a timestamp (crashes, freeze/unfreeze, focus events, ANRs,
+tombstones, Bluetooth HCI events). All of it reads back rows already
+persisted at ingestion time -- nothing here re-parses the bugreport.
 """
 from __future__ import annotations
+
+import json
 
 from sqlmodel import Session, func, select
 
 from app.models.db_models import (
+    AnrRow,
+    BtHciEventRow,
+    BtHciSummaryRow,
     Capture,
     CrashEventRow,
     DeviceInfoRow,
@@ -17,8 +22,9 @@ from app.models.db_models import (
     ForegroundServiceRow,
     FreezeSummaryRow,
     MediaSessionRow,
-    NativeCrashFileRow,
     PackageFactRow,
+    TombstoneRow,
+    WifiEventRow,
 )
 
 
@@ -55,7 +61,14 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
             select(func.count()).select_from(CrashEventRow).where(CrashEventRow.capture_id == capture_id)
         ).one(),
         "native_crashes": session.exec(
-            select(func.count()).select_from(NativeCrashFileRow).where(NativeCrashFileRow.capture_id == capture_id)
+            select(func.count()).select_from(TombstoneRow).where(TombstoneRow.capture_id == capture_id)
+        ).one(),
+        "anrs": session.exec(
+            select(func.count()).select_from(AnrRow).where(AnrRow.capture_id == capture_id)
+        ).one(),
+        "wifi_disconnections": session.exec(
+            select(func.count()).select_from(WifiEventRow)
+            .where(WifiEventRow.capture_id == capture_id, WifiEventRow.kind == "disconnection")
         ).one(),
     }
 
@@ -72,11 +85,23 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     crash_rows = session.exec(
         select(CrashEventRow).where(CrashEventRow.capture_id == capture_id)
     ).all()
-    native_crash_rows = session.exec(
-        select(NativeCrashFileRow).where(NativeCrashFileRow.capture_id == capture_id)
+    tombstone_rows = session.exec(
+        select(TombstoneRow).where(TombstoneRow.capture_id == capture_id)
+    ).all()
+    anr_rows = session.exec(
+        select(AnrRow).where(AnrRow.capture_id == capture_id)
     ).all()
     focus_event_rows = session.exec(
         select(FocusEventRow).where(FocusEventRow.capture_id == capture_id)
+    ).all()
+    bt_summary_row = session.exec(
+        select(BtHciSummaryRow).where(BtHciSummaryRow.capture_id == capture_id)
+    ).first()
+    bt_event_rows = session.exec(
+        select(BtHciEventRow).where(BtHciEventRow.capture_id == capture_id)
+    ).all()
+    wifi_event_rows = session.exec(
+        select(WifiEventRow).where(WifiEventRow.capture_id == capture_id)
     ).all()
 
     timeline = []
@@ -92,6 +117,40 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
             "label": f"{f.package}: {f.event_type}" + (f" ({f.detail})" if f.event_type == "owner_change" else ""),
             "source": _source(f.source_section, f.source_line_start, f.source_line_end),
         })
+    for a in anr_rows:
+        timeline.append({
+            "timestamp": a.timestamp or "", "kind": "anr", "severity": "critical",
+            "label": f"{a.package or 'unknown'} ANR: {a.reason or a.subject}",
+            "source": None,
+        })
+    for t in tombstone_rows:
+        timeline.append({
+            "timestamp": t.timestamp or "", "kind": "native_crash", "severity": "critical",
+            "label": f"{t.package or t.executable or 'unknown'} native crash: {t.signal_name or 'signal'}"
+                     + (f" ({t.signal_code})" if t.signal_code else ""),
+            "source": None,
+        })
+    for e in bt_event_rows:
+        if e.kind == "disconnection_complete" or (e.status_code and e.status_code != 0):
+            label = f"BT {e.kind.replace('_', ' ')}"
+            if e.status_name:
+                label += f": {e.status_name}"
+            if e.reason_name:
+                label += f" (reason: {e.reason_name})"
+            timeline.append({
+                "timestamp": e.timestamp, "kind": "bt_hci",
+                "severity": "warning" if (e.status_code or 0) != 0 else "info",
+                "label": label, "source": None,
+            })
+    for w in wifi_event_rows:
+        if w.kind == "disconnection":
+            timeline.append({
+                "timestamp": w.timestamp, "kind": "wifi",
+                "severity": "info" if w.locally_generated else "warning",
+                "label": f"Wi-Fi disconnected from {w.ssid}: {w.reason_name}"
+                         + (" (locally initiated)" if w.locally_generated else ""),
+                "source": _source(w.source_section, w.source_line_start, w.source_line_end),
+            })
     timeline.sort(key=lambda e: e["timestamp"])
 
     media_session_rows = session.exec(
@@ -112,7 +171,6 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
         ),
         "counts": counts,
         "top_freeze_offenders": top_freeze_offenders,
-        "native_crash_files": [{"filename": f.filename, "modified_at": f.modified_at} for f in native_crash_rows],
         "crash_events": [
             {
                 "timestamp": c.timestamp, "package": c.package, "pid": c.pid,
@@ -121,6 +179,46 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                 "root_cause_frame": c.root_cause_frame,
                 "source": _source(c.source_section, c.source_line_start, c.source_line_end),
             } for c in crash_rows
+        ],
+        "tombstones": [
+            {
+                "filename": t.filename, "modified_at": t.modified_at, "timestamp": t.timestamp,
+                "package": t.package, "executable": t.executable, "signal_name": t.signal_name,
+                "signal_code": t.signal_code, "fault_addr": t.fault_addr, "top_frame": t.top_frame,
+            } for t in tombstone_rows
+        ],
+        "anrs": [
+            {
+                "filename": a.filename, "timestamp": a.timestamp, "package": a.package,
+                "pid": a.pid, "reason": a.reason, "subject": a.subject,
+            } for a in anr_rows
+        ],
+        "bt_hci_summary": (
+            {
+                "total_packets": bt_summary_row.total_packets,
+                "command_count": bt_summary_row.command_count,
+                "event_count": bt_summary_row.event_count,
+                "acl_data_count": bt_summary_row.acl_data_count,
+                "first_timestamp": bt_summary_row.first_timestamp,
+                "last_timestamp": bt_summary_row.last_timestamp,
+                "event_code_counts": json.loads(bt_summary_row.event_code_counts_json),
+                "notable_events": [
+                    {
+                        "timestamp": e.timestamp, "kind": e.kind, "status_name": e.status_name,
+                        "reason_name": e.reason_name, "handle": e.handle,
+                    }
+                    for e in bt_event_rows
+                    if e.kind == "disconnection_complete" or (e.status_code or 0) != 0
+                ],
+            } if bt_summary_row else None
+        ),
+        "wifi_events": [
+            {
+                "timestamp": w.timestamp, "kind": w.kind, "ssid": w.ssid, "bssid": w.bssid,
+                "reason_code": w.reason_code, "reason_name": w.reason_name,
+                "locally_generated": w.locally_generated, "roam": w.roam,
+                "source": _source(w.source_section, w.source_line_start, w.source_line_end),
+            } for w in wifi_event_rows
         ],
         "timeline": timeline,
         "media_sessions": [

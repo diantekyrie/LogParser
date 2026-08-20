@@ -287,6 +287,8 @@ export default function App() {
                 <div className="stat-grid">
                   <StatCard label="Java crashes" value={c.java_crashes} tone={c.java_crashes > 0 ? "critical" : "ok"} />
                   <StatCard label="Native crashes (tombstones)" value={c.native_crashes} tone={c.native_crashes > 0 ? "warning" : "ok"} />
+                  <StatCard label="ANRs" value={c.anrs} tone={c.anrs > 0 ? "critical" : "ok"} />
+                  <StatCard label="Wi-Fi disconnections" value={c.wifi_disconnections} tone="default" />
                   <StatCard label="Freeze events" value={c.freeze_events} tone="default" />
                   <StatCard label="Unfreeze events" value={c.unfreeze_events} tone="default" />
                   <StatCard label="Packages" value={c.packages} tone="default" />
@@ -315,6 +317,93 @@ export default function App() {
                             ) : <span className="muted">none</span>}
                           </td>
                           <td><SourceTag source={cr.source} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+
+              {summary.anrs.length > 0 && (
+                <section className="panel">
+                  <h2>ANRs</h2>
+                  <table className="fact-table">
+                    <thead><tr><th>Time</th><th>Package</th><th>Reason</th><th>PID</th></tr></thead>
+                    <tbody>
+                      {summary.anrs.map((a, i) => (
+                        <tr key={i}>
+                          <td>{a.timestamp}</td><td>{a.package ?? <span className="muted">unattributed</span>}</td>
+                          <td className="small">{a.reason}</td><td>{a.pid}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+
+              {summary.tombstones.length > 0 && (
+                <section className="panel">
+                  <h2>Native crashes (tombstones)</h2>
+                  <table className="fact-table">
+                    <thead><tr><th>Time</th><th>Package / executable</th><th>Signal</th><th>Top frame</th></tr></thead>
+                    <tbody>
+                      {summary.tombstones.map((t, i) => (
+                        <tr key={i}>
+                          <td className="small">{t.timestamp ?? t.modified_at}</td>
+                          <td>{t.package ?? <span className="muted">{t.executable ?? "unattributed"}</span>}</td>
+                          <td>{t.signal_name}{t.signal_code ? ` (${t.signal_code})` : ""}</td>
+                          <td className="small">{t.top_frame}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+              )}
+
+              {summary.bt_hci_summary && (
+                <section className="panel">
+                  <h2>Bluetooth HCI log</h2>
+                  <div className="stat-grid">
+                    <StatCard label="Total packets" value={summary.bt_hci_summary.total_packets} tone="default" />
+                    <StatCard label="Commands" value={summary.bt_hci_summary.command_count} tone="default" />
+                    <StatCard label="Events" value={summary.bt_hci_summary.event_count} tone="default" />
+                    <StatCard label="ACL data" value={summary.bt_hci_summary.acl_data_count} tone="default" />
+                  </div>
+                  <p className="muted small">
+                    {summary.bt_hci_summary.first_timestamp} &ndash; {summary.bt_hci_summary.last_timestamp}
+                  </p>
+                  {summary.bt_hci_summary.notable_events.length > 0 && (
+                    <>
+                      <h3>Notable events (disconnects &amp; non-success statuses)</h3>
+                      <table className="fact-table">
+                        <thead><tr><th>Time</th><th>Kind</th><th>Status</th><th>Reason</th><th>Handle</th></tr></thead>
+                        <tbody>
+                          {summary.bt_hci_summary.notable_events.map((e, i) => (
+                            <tr key={i}>
+                              <td className="small">{e.timestamp}</td><td>{e.kind.replace(/_/g, " ")}</td>
+                              <td className={e.status_name !== "Success" ? "warn-text" : ""}>{e.status_name}</td>
+                              <td>{e.reason_name ?? ""}</td><td>{e.handle ?? ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                </section>
+              )}
+
+              {summary.wifi_events.filter((w) => w.kind === "disconnection").length > 0 && (
+                <section className="panel">
+                  <h2>Wi-Fi disconnections</h2>
+                  <table className="fact-table">
+                    <thead><tr><th>Time</th><th>SSID</th><th>Reason</th><th>Locally initiated</th><th>Cite</th></tr></thead>
+                    <tbody>
+                      {summary.wifi_events.filter((w) => w.kind === "disconnection").map((w, i) => (
+                        <tr key={i}>
+                          <td className="small">{w.timestamp}</td><td>{w.ssid}</td>
+                          <td className={!w.locally_generated ? "warn-text" : ""}>{w.reason_name}</td>
+                          <td>{String(w.locally_generated)}</td>
+                          <td><SourceTag source={w.source} /></td>
                         </tr>
                       ))}
                     </tbody>
@@ -465,6 +554,7 @@ export default function App() {
         .stat-value { font-size: 24px; font-weight: 800; }
         .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
         .stat-critical .stat-value { color: var(--red); }
+        .warn-text { color: var(--amber); font-weight: 600; }
         .stat-warning .stat-value { color: var(--amber); }
         .stat-ok .stat-value { color: var(--green); }
 

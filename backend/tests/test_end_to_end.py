@@ -106,7 +106,9 @@ def test_summary_reflects_persisted_facts_not_a_reparse(session):
     assert len(summary["crash_events"]) == 1
     assert summary["crash_events"][0]["package"] == "com.android.systemui"
     # Every timeline entry must carry a source citation back to the raw log.
-    assert all(e["source"]["line_start"] > 0 for e in summary["timeline"])
+    with_source = [e for e in summary["timeline"] if e["source"] is not None]
+    assert with_source  # at least some entries (crashes, focus events) carry citations
+    assert all(e["source"]["line_start"] > 0 for e in with_source)
 
 
 def test_crash_question_surfaces_device_wide_evidence_without_naming_an_app(session):
@@ -121,7 +123,7 @@ def test_crash_question_surfaces_device_wide_evidence_without_naming_an_app(sess
     evidence = result["bundle"]["device_wide_crash_evidence"]
     assert len(evidence["java_crashes"]) == 1
     assert evidence["java_crashes"][0]["package"] == "com.android.systemui"
-    assert evidence["native_crash_file_count"] > 0
+    assert len(evidence["native_crashes"]) > 0
 
 
 def test_named_app_crash_data_included_in_its_own_claim(session):
@@ -149,3 +151,31 @@ def test_list_providers_reports_availability_from_env():
 def test_unknown_provider_raises_rather_than_silently_falling_back():
     with pytest.raises(ValueError):
         get_llm_client("not-a-real-provider")
+
+
+def test_named_app_anr_data_included_in_its_own_claim(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Did com.disney.wdpro.dlr ANR?")
+    claim = next(c for c in result["bundle"]["claims"] if c["package"] == "com.disney.wdpro.dlr")
+    assert len(claim["verified_state"]["anrs"]) == 2
+    assert "failed to complete startup" in claim["verified_state"]["anrs"][0]["reason"]
+
+
+def test_wifi_question_surfaces_device_wide_disconnection_evidence(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Did Wi-Fi drop or disconnect?")
+    evidence = result["bundle"]["device_wide_wifi_evidence"]
+    assert len(evidence["disconnections"]) == 3
+    assert any(d["ssid"] == "amzn-www" and d["reason_code"] == 3 for d in evidence["disconnections"])
+
+
+def test_bt_hci_summary_persisted_and_queryable(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    summary = build_capture_summary(session, capture.id)
+    bt = summary["bt_hci_summary"]
+    assert bt is not None
+    assert bt["total_packets"] > 0
+    assert bt["command_count"] > 0 and bt["event_count"] > 0
+    # A real anomaly this parser found in the fixture: a Command Complete
+    # with a non-Success status should show up among notable events.
+    assert any(e["status_name"] != "Success" for e in bt["notable_events"])

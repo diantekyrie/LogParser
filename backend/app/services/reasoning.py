@@ -17,7 +17,7 @@ from sqlmodel import Session
 from sqlmodel import select
 
 from app.llm import get_llm_client
-from app.models.db_models import CrashEventRow, NativeCrashFileRow
+from app.models.db_models import AnrRow, CrashEventRow, TombstoneRow, WifiEventRow
 from app.services.correlation import PackageHistory, package_history_across_device
 from app.services.verification import EntityVerification, verify_question_entities
 
@@ -27,6 +27,7 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
 )
 
 CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
+WIFI_TRIGGER_RE = re.compile(r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam)\w*\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = """You are a diagnosis-report writer for Android device logs.
 
@@ -46,14 +47,20 @@ numbers). Rules, no exceptions:
 5. If a fact was checked across multiple captures, say how many captures it
    was corroborated against, not just "confirmed."
 6. If the bundle includes a top-level "device_wide_crash_evidence" key,
-   that's crash evidence for the WHOLE capture, not filtered to any named
-   app -- use it to answer general crash questions, but never claim it
-   proves a specific app crashed unless a claim's own crash_events says so.
-   Native crash file counts are unattributed; say that plainly rather than
-   guessing which app they belong to. Each entry there carries its own
-   "confidence" field, computed the same way as claim confidence -- use it
-   verbatim, same as rule 2. Never assign a confidence level to anything
-   in this bundle that isn't already labeled with one.
+   that's crash/native-crash/ANR evidence for the WHOLE capture, not
+   filtered to any named app -- use it to answer general crash/ANR
+   questions, but never claim it proves a specific app crashed unless a
+   claim's own crash_events/native_crashes/anrs says so. Native crashes
+   carry a `package` field derived from the crashing process; when it's
+   null, say attribution is unknown rather than guessing which app it was.
+   Each entry carries its own "confidence" field, computed the same way as
+   claim confidence -- use it verbatim, same as rule 2. Never assign a
+   confidence level to anything in this bundle that isn't already labeled
+   with one.
+7. If the bundle includes a top-level "device_wide_wifi_evidence" key,
+   that's every Wi-Fi disconnection event in the capture with its 802.11
+   reason code -- Wi-Fi connectivity is device-wide, not per-app, so don't
+   expect it to be attributed to any named app.
 """
 
 
@@ -101,6 +108,8 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
             "crash_events": ev.crash_events,
             "freeze_count": ev.freeze_count,
             "unfreeze_count": ev.unfreeze_count,
+            "native_crashes": ev.tombstones,
+            "anrs": ev.anrs,
         },
     }
     if history is not None:
@@ -142,20 +151,23 @@ def diagnose(
         java_crash_count = session.exec(
             select(CrashEventRow).where(CrashEventRow.capture_id == capture_id)
         ).all()
-        native_crash_count = session.exec(
-            select(NativeCrashFileRow).where(NativeCrashFileRow.capture_id == capture_id)
+        tombstone_count = session.exec(
+            select(TombstoneRow).where(TombstoneRow.capture_id == capture_id)
         ).all()
-        # Each crash line is exactly one structured fact, checked against
-        # exactly this one capture -- computed the same way entity claims
-        # are, rather than leaving confidence for the LLM to infer (an
-        # earlier version left this field out entirely and relied on the
-        # system prompt telling the model not to invent one; that worked
-        # for one provider but not another live-tested one, which assigned
-        # "HIGH confidence" to evidence that had none. Computing it removes
-        # the ambiguity instead of hoping every model infers it the same way).
+        anr_count = session.exec(
+            select(AnrRow).where(AnrRow.capture_id == capture_id)
+        ).all()
+        # Each event is exactly one structured fact, checked against exactly
+        # this one capture -- computed the same way entity claims are,
+        # rather than leaving confidence for the LLM to infer (an earlier
+        # version left this field out entirely and relied on the system
+        # prompt telling the model not to invent one; that worked for one
+        # provider but not another live-tested one, which assigned "HIGH
+        # confidence" to evidence that had none. Computing it removes the
+        # ambiguity instead of hoping every model infers it the same way).
         crash_confidence, crash_corroboration = score_confidence(1, 1)
         bundle["device_wide_crash_evidence"] = {
-            "note": "Not filtered to a named app -- includes every crash found in this capture.",
+            "note": "Not filtered to a named app -- includes every crash/ANR found in this capture.",
             "java_crashes": [
                 {"timestamp": c.timestamp, "package": c.package, "exception_class": c.exception_class,
                  "message": c.message, "root_cause_class": c.root_cause_class,
@@ -164,11 +176,44 @@ def diagnose(
                  "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end}}
                 for c in java_crash_count
             ],
-            "native_crash_file_count": len(native_crash_count),
-            "native_crash_attribution": (
-                "Tombstone files are binary; this system does not parse their contents, "
-                "so which app (if any) they belong to is not determined."
+            "native_crashes": [
+                {"timestamp": t.timestamp, "package": t.package, "executable": t.executable,
+                 "signal_name": t.signal_name, "signal_code": t.signal_code, "top_frame": t.top_frame,
+                 "confidence": crash_confidence, "corroboration": crash_corroboration}
+                for t in tombstone_count
+            ],
+            "native_crash_attribution_note": (
+                "Tombstone `package` is derived from the crashing process's Cmdline; it is null "
+                "when the process was a native binary/service rather than an app package -- that "
+                "is reported as null, not guessed."
             ),
+            "anrs": [
+                {"timestamp": a.timestamp, "package": a.package, "reason": a.reason,
+                 "confidence": crash_confidence, "corroboration": crash_corroboration}
+                for a in anr_count
+            ],
+        }
+
+    if WIFI_TRIGGER_RE.search(question):
+        # Wi-Fi connectivity is device-wide, not attributable to a named
+        # app, so this always surfaces regardless of whether any app was
+        # named -- same principle as device_wide_crash_evidence.
+        wifi_confidence, wifi_corroboration = score_confidence(1, 1)
+        disconnections = session.exec(
+            select(WifiEventRow).where(
+                WifiEventRow.capture_id == capture_id, WifiEventRow.kind == "disconnection"
+            )
+        ).all()
+        bundle["device_wide_wifi_evidence"] = {
+            "note": "Every Wi-Fi disconnection event found in this capture, with its 802.11 reason code.",
+            "disconnections": [
+                {"timestamp": w.timestamp, "ssid": w.ssid, "bssid": w.bssid,
+                 "reason_code": w.reason_code, "reason_name": w.reason_name,
+                 "locally_generated": w.locally_generated,
+                 "confidence": wifi_confidence, "corroboration": wifi_corroboration,
+                 "source": {"section": w.source_section, "line_start": w.source_line_start, "line_end": w.source_line_end}}
+                for w in disconnections
+            ],
         }
 
     user_prompt = (

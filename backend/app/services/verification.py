@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from sqlmodel import Session, select
 
 from app.models.db_models import (
+    AnrRow,
     Capture,
     CrashEventRow,
     FocusEventRow,
@@ -24,6 +25,7 @@ from app.models.db_models import (
     FreezeSummaryRow,
     MediaSessionRow,
     PackageFactRow,
+    TombstoneRow,
 )
 
 PACKAGE_ID_RE = re.compile(r"\b([a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,})\b", re.IGNORECASE)
@@ -56,6 +58,8 @@ class EntityVerification:
     crash_events: list[dict]           # Java FATAL EXCEPTION crashes attributed to this package
     freeze_count: int
     unfreeze_count: int
+    tombstones: list[dict]             # native crashes attributed to this package
+    anrs: list[dict]                   # ANRs attributed to this package
     corroborating_fact_count: int
 
 
@@ -132,8 +136,20 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
         )
     ).first()
 
+    tombstone_rows = session.exec(
+        select(TombstoneRow).where(
+            TombstoneRow.capture_id == capture_id, TombstoneRow.package == package
+        )
+    ).all()
+
+    anr_rows = session.exec(
+        select(AnrRow).where(
+            AnrRow.capture_id == capture_id, AnrRow.package == package
+        )
+    ).all()
+
     corroborating = sum(x is not None for x in (focus_top, media, latest_event, pkg_fact))
-    corroborating += len(crash_rows)
+    corroborating += len(crash_rows) + len(tombstone_rows) + len(anr_rows)
     if freeze_summary is not None:
         corroborating += 1
 
@@ -169,6 +185,17 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
         ],
         freeze_count=freeze_summary.freeze_count if freeze_summary else 0,
         unfreeze_count=freeze_summary.unfreeze_count if freeze_summary else 0,
+        tombstones=[
+            {
+                "filename": t.filename, "timestamp": t.timestamp, "signal_name": t.signal_name,
+                "signal_code": t.signal_code, "fault_addr": t.fault_addr, "top_frame": t.top_frame,
+            }
+            for t in tombstone_rows
+        ],
+        anrs=[
+            {"filename": a.filename, "timestamp": a.timestamp, "reason": a.reason, "subject": a.subject}
+            for a in anr_rows
+        ],
         corroborating_fact_count=corroborating,
     )
 

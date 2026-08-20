@@ -150,11 +150,86 @@ class CrashEventRow(SQLModel, table=True):
     source_line_end: int
 
 
-class NativeCrashFileRow(SQLModel, table=True):
+class TombstoneRow(SQLModel, table=True):
+    """A parsed native (non-JVM) crash -- content, not just filename/mtime."""
+
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)
     filename: str
     modified_at: str
+    timestamp: Optional[str]
+    build_fingerprint: Optional[str]
+    executable: Optional[str]
+    cmdline: Optional[str]
+    package: Optional[str] = Field(default=None, index=True)
+    pid: Optional[int]
+    tid: Optional[int]
+    thread_name: Optional[str]
+    uid: Optional[int]
+    signal_number: Optional[int]
+    signal_name: Optional[str]
+    signal_code: Optional[str]
+    fault_addr: Optional[str]
+    abi: Optional[str]
+    top_frame: Optional[str]
+
+
+class AnrRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    filename: str
+    timestamp: Optional[str]
+    subject: str
+    pid: Optional[int]
+    package: Optional[str] = Field(default=None, index=True)
+    reason: Optional[str]
+
+
+class BtHciSummaryRow(SQLModel, table=True):
+    """One row per capture: aggregate Bluetooth HCI log facts."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True, unique=True)
+    total_packets: int
+    command_count: int
+    event_count: int
+    acl_data_count: int
+    first_timestamp: Optional[str]
+    last_timestamp: Optional[str]
+    event_code_counts_json: str  # JSON-encoded {hex code: count}
+
+
+class BtHciEventRow(SQLModel, table=True):
+    """One decoded high-value HCI event (connection/disconnection/command
+    complete/status) -- see app/parsers/bt_hci.py for which event types
+    get per-record decoding."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    kind: str = Field(index=True)
+    status_code: Optional[int]
+    status_name: Optional[str]
+    handle: Optional[int]
+    reason_code: Optional[int]
+    reason_name: Optional[str]
+    opcode: Optional[int]
+
+
+class WifiEventRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    kind: str = Field(index=True)
+    ssid: Optional[str]
+    bssid: Optional[str]
+    reason_code: Optional[int]
+    reason_name: Optional[str]
+    locally_generated: Optional[bool]
+    roam: Optional[bool]
+    source_section: str
+    source_line_start: int
+    source_line_end: int
 
 
 class FreezeSummaryRow(SQLModel, table=True):

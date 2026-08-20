@@ -4,12 +4,16 @@ dataclasses into SQL rows.
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import datetime
 
 from sqlmodel import Session, select
 
 from app.models.db_models import (
+    AnrRow,
+    BtHciEventRow,
+    BtHciSummaryRow,
     Capture,
     CrashEventRow,
     Device,
@@ -19,8 +23,9 @@ from app.models.db_models import (
     ForegroundServiceRow,
     FreezeSummaryRow,
     MediaSessionRow,
-    NativeCrashFileRow,
     PackageFactRow,
+    TombstoneRow,
+    WifiEventRow,
 )
 from app.parsers.base import ParsedCapture
 
@@ -140,9 +145,48 @@ def persist_capture(
             source_line_end=c.source_ref.line_end,
         ))
 
-    for f in parsed.native_crash_files:
-        session.add(NativeCrashFileRow(
-            capture_id=capture.id, filename=f.filename, modified_at=f.modified_at,
+    for t in parsed.tombstones:
+        session.add(TombstoneRow(
+            capture_id=capture.id, filename=t.filename, modified_at=t.modified_at,
+            timestamp=t.timestamp, build_fingerprint=t.build_fingerprint,
+            executable=t.executable, cmdline=t.cmdline, package=t.package,
+            pid=t.pid, tid=t.tid, thread_name=t.thread_name, uid=t.uid,
+            signal_number=t.signal_number, signal_name=t.signal_name,
+            signal_code=t.signal_code, fault_addr=t.fault_addr, abi=t.abi,
+            top_frame=t.top_frame,
+        ))
+
+    for a in parsed.anrs:
+        session.add(AnrRow(
+            capture_id=capture.id, filename=a.filename, timestamp=a.timestamp,
+            subject=a.subject, pid=a.pid, package=a.package, reason=a.reason,
+        ))
+
+    if parsed.bt_hci_summary is not None:
+        s = parsed.bt_hci_summary
+        session.add(BtHciSummaryRow(
+            capture_id=capture.id, total_packets=s.total_packets,
+            command_count=s.command_count, event_count=s.event_count,
+            acl_data_count=s.acl_data_count, first_timestamp=s.first_timestamp,
+            last_timestamp=s.last_timestamp,
+            event_code_counts_json=json.dumps(s.event_code_counts),
+        ))
+        for e in s.events:
+            session.add(BtHciEventRow(
+                capture_id=capture.id, timestamp=e.timestamp, kind=e.kind,
+                status_code=e.status_code, status_name=e.status_name,
+                handle=e.handle, reason_code=e.reason_code, reason_name=e.reason_name,
+                opcode=e.opcode,
+            ))
+
+    for w in parsed.wifi_events:
+        session.add(WifiEventRow(
+            capture_id=capture.id, timestamp=w.timestamp, kind=w.kind,
+            ssid=w.ssid, bssid=w.bssid, reason_code=w.reason_code, reason_name=w.reason_name,
+            locally_generated=w.locally_generated, roam=w.roam,
+            source_section=w.source_ref.section,
+            source_line_start=w.source_ref.line_start,
+            source_line_end=w.source_ref.line_end,
         ))
 
     freeze_counts: Counter = Counter()

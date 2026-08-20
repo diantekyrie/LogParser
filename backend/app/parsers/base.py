@@ -142,13 +142,30 @@ class CrashEvent:
 
 
 @dataclass
-class NativeCrashFile:
-    """A tombstone file present in the bugreport zip (FS/data/tombstones/).
-    We report its existence and filename/timestamp -- these are binary
-    native-crash dumps, not something this MVP parses the contents of."""
+class TombstoneFacts:
+    """Parsed contents of one plain-text tombstone file
+    (FS/data/tombstones/tombstone_NN) -- a native (non-JVM) crash dump.
+    The `.pb` protobuf sibling of each tombstone is not parsed; the
+    plain-text version carries the same facts in a directly-parseable form.
+    """
 
     filename: str
-    modified_at: str  # as reported by the zip entry, device-local
+    modified_at: str                   # as reported by the zip entry, device-local
+    timestamp: Optional[str]           # device-local, as printed in the tombstone's own header
+    build_fingerprint: Optional[str]
+    executable: Optional[str]
+    cmdline: Optional[str]
+    package: Optional[str]             # derived from cmdline; None for native binaries
+    pid: Optional[int]
+    tid: Optional[int]
+    thread_name: Optional[str]
+    uid: Optional[int]
+    signal_number: Optional[int]
+    signal_name: Optional[str]         # e.g. "SIGSEGV"
+    signal_code: Optional[str]         # e.g. "SEGV_MAPERR"
+    fault_addr: Optional[str]
+    abi: Optional[str]
+    top_frame: Optional[str]           # first #00 backtrace line -- the crashing frame
 
 
 @dataclass
@@ -183,6 +200,88 @@ class DeviceInfo:
 
 
 @dataclass
+class AnrFacts:
+    """Parsed contents of one ANR (Application Not Responding) trace file
+    (FS/data/anr/anr_<timestamp> inside the bugreport zip -- a separate
+    file, not text inside the flattened bugreport txt).
+
+    The `Subject:` header line always has the shape:
+        Process ProcessRecord{<hash> <pid>:<package>/<user>} <reason>
+    e.g. "Process ProcessRecord{2e7636c 16041:com.disney.wdpro.dlr/u0a335}
+    failed to complete startup" -- pid, package, and the failure reason are
+    all pulled from this one line, which is always present.
+    """
+
+    filename: str
+    timestamp: Optional[str]   # parsed from the filename, e.g. "2026-07-22-17-38-38-800"
+    subject: str                # full raw Subject: line
+    pid: Optional[int]
+    package: Optional[str]
+    reason: Optional[str]       # e.g. "failed to complete startup", "Input dispatching timed out"
+
+
+@dataclass
+class BtHciEvent:
+    """One decoded HCI event/command-status/command-complete record from
+    the device's `btsnoop`-format Bluetooth HCI log
+    (FS/data/misc/bluetooth/logs/btsnooz_hci.log -- despite the filename,
+    verified against real bytes to be the classic btsnoop binary format,
+    not the compressed bugreport-inline "btsnooz" variant). Only the
+    diagnostically load-bearing event types are decoded per-record
+    (connection/disconnection complete, command complete/status, LE
+    connection complete); everything else is counted in
+    BtHciSummary.event_code_counts without per-record decoding.
+    """
+
+    timestamp: str          # ISO-ish UTC, converted from the btsnoop 64-bit epoch
+    kind: str                # "disconnection_complete" | "connection_complete" |
+                              # "command_complete" | "command_status" |
+                              # "le_connection_complete"
+    status_code: Optional[int]
+    status_name: Optional[str]     # human label from the HCI status code table, or None if unmapped
+    handle: Optional[int]
+    reason_code: Optional[int]      # disconnection reason, same code table as status
+    reason_name: Optional[str]
+    opcode: Optional[int]           # command opcode, for command_complete/command_status
+
+
+@dataclass
+class BtHciSummary:
+    """Aggregate facts from one capture's Bluetooth HCI log."""
+
+    total_packets: int
+    command_count: int
+    event_count: int
+    acl_data_count: int
+    first_timestamp: Optional[str]
+    last_timestamp: Optional[str]
+    event_code_counts: dict          # {hex event code string: count}
+    events: list[BtHciEvent] = field(default_factory=list)  # only the decoded high-value ones
+
+
+@dataclass
+class WifiEvent:
+    """One decoded event from `DUMP OF SERVICE wifi` -> WifiController's
+    state-machine transition log (`rec[N]: time=... what=EVENT_NAME ...`).
+    Only the diagnostically load-bearing event types are decoded
+    (disconnection with 802.11 reason code, BSSID association/roam);
+    the state machine log has many other "what=" event types not parsed
+    here (e.g. CMD_UPDATE_AP_CAPABILITY, screen state) since they carry no
+    connectivity-failure signal.
+    """
+
+    timestamp: str
+    kind: str                 # "disconnection" | "association"
+    ssid: Optional[str]
+    bssid: Optional[str]
+    reason_code: Optional[int]        # 802.11 reason code, disconnection only
+    reason_name: Optional[str]
+    locally_generated: Optional[bool]  # disconnection only
+    roam: Optional[bool]               # association only
+    source_ref: SourceRef
+
+
+@dataclass
 class ParsedCapture:
     """Everything a capture's ingestion pipeline produced, ground-truth facts only."""
 
@@ -193,6 +292,9 @@ class ParsedCapture:
     foreground_services: list[ForegroundServiceFacts] = field(default_factory=list)
     freeze_events: list[ProcessFreezeEvent] = field(default_factory=list)
     crash_events: list[CrashEvent] = field(default_factory=list)
-    native_crash_files: list[NativeCrashFile] = field(default_factory=list)
+    tombstones: list[TombstoneFacts] = field(default_factory=list)
+    anrs: list[AnrFacts] = field(default_factory=list)
+    bt_hci_summary: Optional[BtHciSummary] = None
+    wifi_events: list[WifiEvent] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

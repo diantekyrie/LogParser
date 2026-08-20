@@ -113,9 +113,56 @@ def test_freeze_events_present_and_reasonable(capture1):
     assert codes.issubset({1, 3, 4, 6, 7, 10, 19})
 
 
-def test_native_crash_files_from_zip_listing(capture1):
-    assert len(capture1.native_crash_files) > 0
-    assert all(f.filename.startswith("tombstone_") for f in capture1.native_crash_files)
+def test_tombstones_parsed_from_zip(capture1):
+    assert len(capture1.tombstones) > 0
+    assert all(t.filename.startswith("tombstone_") for t in capture1.tombstones)
+    # Every tombstone should have parsed a signal -- confirms content was
+    # actually parsed, not just filenames listed.
+    assert all(t.signal_name is not None for t in capture1.tombstones)
+    # At least one tombstone attributes to a real app package (not every
+    # tombstone will -- native binaries/services correctly report None).
+    assert any(t.package is not None for t in capture1.tombstones)
+    # Real variety confirmed present in this fixture (not fabricated):
+    signals = {t.signal_name for t in capture1.tombstones}
+    assert {"SIGSEGV", "SIGABRT", "SIGTRAP"}.issubset(signals)
+    # A tombstone whose Cmdline is a multi-token linker64 invocation (not a
+    # bare package id) must NOT be misattributed to a package -- regression
+    # for a real bug where a missing "ppid:" field in some tombstones'
+    # pid line (a genuine format variant) caused pid/tid to parse as None.
+    linker_tombstones = [t for t in capture1.tombstones if t.executable and "linker64" in t.executable]
+    assert linker_tombstones
+    assert all(t.package is None for t in linker_tombstones)
+    assert all(t.pid is not None for t in linker_tombstones)
+
+
+def test_anrs_parsed_with_package_attribution(capture1):
+    assert len(capture1.anrs) == 2
+    for a in capture1.anrs:
+        assert a.package == "com.disney.wdpro.dlr"
+        assert a.reason == "failed to complete startup"
+        assert a.pid is not None
+
+
+def test_bt_hci_log_decoded_with_sane_values(capture1):
+    # Parsed from ingestion (capture1 fixture) via the full pipeline.
+    from app.services.ingestion import parse_bugreport_zip as _p
+    cap = _p(CAPTURE_1)
+    summary = cap.bt_hci_summary
+    assert summary is not None
+    assert summary.total_packets == 1747
+    assert summary.command_count == 107
+    assert summary.event_count == 985
+    assert summary.acl_data_count == 655
+    # Decoded timestamps must land within the capture's own time window,
+    # not some wildly wrong epoch -- this caught a real bug where an
+    # incorrect btsnoop-epoch-to-Unix delta constant decoded timestamps to
+    # 1996 instead of 2026.
+    assert summary.first_timestamp.startswith("2026-08-14")
+    assert summary.last_timestamp.startswith("2026-08-14")
+    # A real, non-fabricated anomaly found in this fixture: a Command
+    # Complete with a non-Success status.
+    non_success = [e for e in summary.events if e.status_code not in (None, 0)]
+    assert any(e.status_name == "Unknown Connection Identifier" for e in non_success)
 
 
 # Real lines from a third device's bugreport (not committed as a fixture --
@@ -213,6 +260,23 @@ def test_crash_parser_stops_at_next_fatal_exception_boundary():
     # the next crash's lines.
     assert first.source_ref.line_end < second.source_ref.line_start
     assert second.source_ref.line_end < third.source_ref.line_start
+
+
+def test_wifi_disconnection_events_with_802_11_reason_codes(capture1):
+    disconnections = [e for e in capture1.wifi_events if e.kind == "disconnection"]
+    assert len(disconnections) == 3
+    by_ssid = {e.ssid: e for e in disconnections}
+    assert by_ssid["amzn-www"].reason_code == 3
+    assert by_ssid["amzn-www"].reason_name == "Deauthenticated: station leaving"
+    assert by_ssid["amzn-www"].locally_generated is True
+    # grep-verified line number for this exact disconnection record.
+    assert by_ssid["amzn-www"].source_ref.line_start == 1622419
+
+
+def test_wifi_association_events_include_roam_flag(capture1):
+    associations = [e for e in capture1.wifi_events if e.kind == "association"]
+    assert len(associations) > 0
+    assert all(e.roam is not None for e in associations)
 
 
 def test_second_capture_also_parses_cleanly():
