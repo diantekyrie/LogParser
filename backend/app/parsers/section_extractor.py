@@ -1,15 +1,21 @@
 """Streams the (typically 100-250MB) flattened bugreport .txt out of the zip
-and slices out only the `dumpsys` sections we have parsers for.
+and slices out only the sections we have parsers for.
 
-We never load the whole bugreport into memory. `dumpsys` output inside a
-bugreport is delimited like:
+We never load the whole bugreport into memory. Two different delimiter
+styles appear in a bugreport, and both are handled here:
 
+`dumpsys` output:
     DUMP OF SERVICE [CRITICAL|HIGH] <name>:
     ...content...
     --------- 0.002s was the duration of dumpsys <name>, ending at: <ts>
     -------------------------------------------------------------------------------
 
-The same service name can appear multiple times (a fast CRITICAL/HIGH pass
+Captured command/log output (logcat buffers, iptables, etc.):
+    ------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v) ------
+    ...content...
+    ------ 0.326s was the duration of 'SYSTEM LOG' ------
+
+The same section name can appear multiple times (a fast CRITICAL/HIGH pass
 early in the bugreport, then the full dump later) -- when that happens we
 keep the LAST occurrence, since in every real bugreport observed the later,
 un-prioritized dump is the complete one.
@@ -21,8 +27,23 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 
-SECTION_START_RE = re.compile(r"^DUMP OF SERVICE(?: (CRITICAL|HIGH))? ([\w./+\-]+):\s*$")
-SECTION_END_RE = re.compile(r"^--------- .* was the duration of dumpsys ")
+DUMPSYS_START_RE = re.compile(r"^DUMP OF SERVICE(?: (CRITICAL|HIGH))? ([\w./+\-]+):\s*$")
+DUMPSYS_END_RE = re.compile(r"^--------- .* was the duration of dumpsys ")
+
+LOG_SECTION_START_RE = re.compile(r"^------ ([\w .'\-]+?)(?: \(.*\))? ------\s*$")
+LOG_SECTION_END_RE = re.compile(r"^------ .* was the duration of '(.+?)' ------\s*$")
+
+# Canonical names we use for log sections, mapped from their bugreport
+# display name (case/spacing as printed) to the lowercase key we key
+# results/parsers by, matching the "audio"/"package"/etc. convention used
+# for dumpsys sections.
+LOG_SECTION_NAME_MAP = {"SYSTEM LOG": "system_log", "SYSTEM PROPERTIES": "system_properties"}
+
+# Pseudo-section name for the plain-text header block before the first
+# delimited section (Build/Build fingerprint/Bootloader/Uptime/etc.) -- it
+# has no delimiter of its own, it just ends where the first real section
+# starts.
+PREAMBLE = "preamble"
 
 MAIN_ENTRY_RE = re.compile(r"^bugreport-.*\.txt$")
 
@@ -30,10 +51,11 @@ MAIN_ENTRY_RE = re.compile(r"^bugreport-.*\.txt$")
 @dataclass
 class Section:
     name: str
-    priority: str | None     # None | "CRITICAL" | "HIGH"
+    priority: str | None     # None | "CRITICAL" | "HIGH" (dumpsys sections only)
     line_start: int          # first line of content (after the header line)
     line_end: int            # last line of content (inclusive, before the footer)
     lines: list[str] = field(default_factory=list)
+    kind: str = "dumpsys"    # "dumpsys" | "log" -- which delimiter style bounded it
 
 
 def find_main_bugreport_entry(zf: zipfile.ZipFile) -> zipfile.ZipInfo:
@@ -59,6 +81,8 @@ def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, S
     results: dict[str, Section] = {}
 
     current: Section | None = None
+    if PREAMBLE in wanted_names:
+        current = Section(name=PREAMBLE, priority=None, line_start=1, line_end=1, kind="log")
     line_no = 0
 
     with zf.open(entry) as raw:
@@ -73,22 +97,64 @@ def extract_sections(zf: zipfile.ZipFile, wanted_names: set[str]) -> dict[str, S
             line_no += 1
             stripped = line.rstrip("\n").rstrip("\r")
 
+            # The preamble has no delimiter of its own -- it ends the moment
+            # ANY section header line appears (wanted or not), and that same
+            # line is then re-examined below as a normal potential section
+            # start.
+            if current is not None and current.name == PREAMBLE:
+                if DUMPSYS_START_RE.match(stripped) or LOG_SECTION_START_RE.match(stripped):
+                    current.line_end = line_no - 1
+                    results[PREAMBLE] = current
+                    current = None
+                else:
+                    current.lines.append(stripped)
+                    continue
+
             if current is None:
-                m = SECTION_START_RE.match(stripped)
+                m = DUMPSYS_START_RE.match(stripped)
                 if m and m.group(2) in wanted_names:
                     current = Section(
                         name=m.group(2),
                         priority=m.group(1),
                         line_start=line_no + 1,
                         line_end=line_no + 1,
+                        kind="dumpsys",
                     )
+                    continue
+
+                m2 = LOG_SECTION_START_RE.match(stripped)
+                if m2:
+                    mapped = LOG_SECTION_NAME_MAP.get(m2.group(1), m2.group(1).lower().replace(" ", "_"))
+                    if mapped in wanted_names:
+                        current = Section(
+                            name=mapped,
+                            priority=None,
+                            line_start=line_no + 1,
+                            line_end=line_no + 1,
+                            kind="log",
+                        )
                 continue
 
             # We are inside a wanted section; watch for its end marker.
-            if SECTION_END_RE.match(stripped):
+            end_matched = (
+                DUMPSYS_END_RE.match(stripped) if current.kind == "dumpsys"
+                else LOG_SECTION_END_RE.match(stripped)
+            )
+            if end_matched:
                 current.line_end = line_no - 1
-                # Keep the LAST occurrence of a given section name.
-                results[current.name] = current
+                if current.kind == "dumpsys":
+                    # Keep the LAST occurrence: a fast CRITICAL/HIGH pass
+                    # prints early, the full un-prioritized dump later.
+                    results[current.name] = current
+                elif current.name not in results:
+                    # Keep the FIRST occurrence for log-style sections. A
+                    # bugreport can print a second, heavily time-filtered
+                    # "SYSTEM LOG" near the very end (e.g. a `-T <recent
+                    # timestamp>` trailer covering only the last few
+                    # seconds) reusing the same section name -- that's a
+                    # small subset, not a fuller version, so overwriting
+                    # with it would silently drop the real data.
+                    results[current.name] = current
                 current = None
                 continue
 

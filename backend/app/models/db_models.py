@@ -106,3 +106,61 @@ class ForegroundServiceRow(SQLModel, table=True):
     source_section: str
     source_line_start: int
     source_line_end: int
+
+
+class DeviceInfoRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True, unique=True)
+    manufacturer: Optional[str]
+    model: Optional[str]
+    android_release: Optional[str]
+    sdk_version: Optional[int]
+    build_id: Optional[str]
+    build_fingerprint: Optional[str]
+    security_patch: Optional[str]
+    bootloader: Optional[str]
+    radio: Optional[str]
+    network: Optional[str]
+    kernel: Optional[str]
+    serial: Optional[str]
+    cpu_abi: Optional[str]
+    hardware: Optional[str]
+    build_type: Optional[str]
+    uptime: Optional[str]
+    timezone: Optional[str]
+    crypto_state: Optional[str]
+    verified_boot_state: Optional[str]
+    debuggable: Optional[bool]
+
+
+class CrashEventRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    thread: str
+    package: Optional[str] = Field(default=None, index=True)
+    pid: Optional[int]
+    exception_class: Optional[str]
+    message: Optional[str]
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
+class NativeCrashFileRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    filename: str
+    modified_at: str
+
+
+class FreezeSummaryRow(SQLModel, table=True):
+    """Per-package freeze/unfreeze counts for one capture. Individual
+    freeze/unfreeze events aren't persisted row-by-row (a capture can have
+    thousands); this is the aggregate the dashboard actually needs."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    package: str = Field(index=True)
+    freeze_count: int
+    unfreeze_count: int

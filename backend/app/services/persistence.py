@@ -4,17 +4,22 @@ dataclasses into SQL rows.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 from sqlmodel import Session, select
 
 from app.models.db_models import (
     Capture,
+    CrashEventRow,
     Device,
+    DeviceInfoRow,
     FocusEventRow,
     FocusStackEntryRow,
     ForegroundServiceRow,
+    FreezeSummaryRow,
     MediaSessionRow,
+    NativeCrashFileRow,
     PackageFactRow,
 )
 from app.parsers.base import ParsedCapture
@@ -106,6 +111,47 @@ def persist_capture(
             source_section=f.source_ref.section,
             source_line_start=f.source_ref.line_start,
             source_line_end=f.source_ref.line_end,
+        ))
+
+    if parsed.device_info is not None:
+        di = parsed.device_info
+        session.add(DeviceInfoRow(
+            capture_id=capture.id,
+            manufacturer=di.manufacturer, model=di.model,
+            android_release=di.android_release, sdk_version=di.sdk_version,
+            build_id=di.build_id, build_fingerprint=di.build_fingerprint,
+            security_patch=di.security_patch, bootloader=di.bootloader,
+            radio=di.radio, network=di.network, kernel=di.kernel,
+            serial=di.serial, cpu_abi=di.cpu_abi, hardware=di.hardware,
+            build_type=di.build_type, uptime=di.uptime, timezone=di.timezone,
+            crypto_state=di.crypto_state, verified_boot_state=di.verified_boot_state,
+            debuggable=di.debuggable,
+        ))
+
+    for c in parsed.crash_events:
+        session.add(CrashEventRow(
+            capture_id=capture.id,
+            timestamp=c.timestamp, thread=c.thread, package=c.package, pid=c.pid,
+            exception_class=c.exception_class, message=c.message,
+            source_section=c.source_ref.section,
+            source_line_start=c.source_ref.line_start,
+            source_line_end=c.source_ref.line_end,
+        ))
+
+    for f in parsed.native_crash_files:
+        session.add(NativeCrashFileRow(
+            capture_id=capture.id, filename=f.filename, modified_at=f.modified_at,
+        ))
+
+    freeze_counts: Counter = Counter()
+    unfreeze_counts: Counter = Counter()
+    for e in parsed.freeze_events:
+        (freeze_counts if e.event_type == "freeze" else unfreeze_counts)[e.package] += 1
+    for pkg in set(freeze_counts) | set(unfreeze_counts):
+        session.add(FreezeSummaryRow(
+            capture_id=capture.id, package=pkg,
+            freeze_count=freeze_counts.get(pkg, 0),
+            unfreeze_count=unfreeze_counts.get(pkg, 0),
         ))
 
     session.commit()

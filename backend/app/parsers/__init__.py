@@ -15,7 +15,10 @@ from app.parsers.base import (
     SourceRef,
 )
 
-WANTED_SECTIONS = {"audio", "package", "media_session", "activity"}
+WANTED_SECTIONS = {
+    "audio", "package", "media_session", "activity", "system_log",
+    "system_properties", "preamble",
+}
 
 __all__ = [
     "ForegroundServiceFacts",

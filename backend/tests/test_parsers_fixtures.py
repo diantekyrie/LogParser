@@ -72,6 +72,47 @@ def test_media_sessions_reflect_actual_playback_state(capture1):
     assert by_pkg["com.google.android.apps.youtube.music"].playback_state == "PAUSED"
 
 
+def test_device_info(capture1):
+    info = capture1.device_info
+    assert info.manufacturer == "Google"
+    assert info.model == "Pixel 10"
+    assert info.sdk_version == 37
+    assert info.security_patch == "2026-08-05"
+    assert info.serial == "57110DLCR003VF"
+
+
+def test_crash_event_matches_known_incident(capture1):
+    # Second real bug this parser work caught: the bugreport prints a
+    # second, heavily time-filtered "SYSTEM LOG" section near the very end
+    # (a `-T <recent timestamp>` trailer covering only the last few
+    # seconds) reusing the exact same section name. "Keep last occurrence"
+    # (correct for dumpsys CRITICAL/HIGH passes) silently grabbed that
+    # tiny trailer instead of the real ~30k-line section for log-style
+    # sections, dropping this crash entirely (0 found instead of 1).
+    assert len(capture1.crash_events) == 1
+    crash = capture1.crash_events[0]
+    assert crash.package == "com.android.systemui"
+    assert crash.exception_class == "DeadSystemException"
+    assert crash.source_ref.line_start == 58157
+
+
+def test_freeze_events_present_and_reasonable(capture1):
+    assert len(capture1.freeze_events) > 0
+    freezes = [e for e in capture1.freeze_events if e.event_type == "freeze"]
+    unfreezes = [e for e in capture1.freeze_events if e.event_type == "unfreeze"]
+    assert len(freezes) > 0
+    assert len(unfreezes) > 0
+    # Unfreeze reason codes are a small enum (observed: 1,3,4,6,7,10,19),
+    # not a duration -- asserting that keeps the field honest.
+    codes = {e.unfreeze_reason_code for e in unfreezes}
+    assert codes.issubset({1, 3, 4, 6, 7, 10, 19})
+
+
+def test_native_crash_files_from_zip_listing(capture1):
+    assert len(capture1.native_crash_files) > 0
+    assert all(f.filename.startswith("tombstone_") for f in capture1.native_crash_files)
+
+
 def test_second_capture_also_parses_cleanly():
     if not CAPTURE_2.exists():
         pytest.skip("second fixture not present")

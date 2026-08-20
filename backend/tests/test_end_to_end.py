@@ -16,6 +16,7 @@ from app.services.correlation import package_history_across_device
 from app.services.ingestion import parse_bugreport_zip
 from app.services.persistence import persist_capture
 from app.services.reasoning import diagnose
+from app.services.summary import build_capture_summary
 from app.services.verification import verify_question_entities
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -90,3 +91,18 @@ def test_diagnose_returns_confidence_tied_to_corroboration(session):
         assert c["confidence"] in {"HIGH", "MEDIUM", "LOW", "UNCONFIRMED"}
         assert "cross_capture_history" in c  # "across all captures" triggered history lookup
     assert "[stub LLM" in result["report"]
+
+
+def test_summary_reflects_persisted_facts_not_a_reparse(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    summary = build_capture_summary(session, capture.id)
+
+    assert summary["device_info"]["model"] == "Pixel 10"
+    assert summary["device_info"]["security_patch"] == "2026-08-05"
+    assert summary["counts"]["java_crashes"] == 1
+    assert summary["counts"]["native_crashes"] > 0
+    assert summary["counts"]["freeze_events"] + summary["counts"]["unfreeze_events"] > 0
+    assert len(summary["crash_events"]) == 1
+    assert summary["crash_events"][0]["package"] == "com.android.systemui"
+    # Every timeline entry must carry a source citation back to the raw log.
+    assert all(e["source"]["line_start"] > 0 for e in summary["timeline"])

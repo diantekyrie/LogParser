@@ -12,6 +12,7 @@ from app.models.db_models import Capture, Device
 from app.services.ingestion import parse_bugreport_zip
 from app.services.persistence import persist_capture
 from app.services.reasoning import diagnose
+from app.services.summary import build_capture_summary
 
 router = APIRouter()
 
@@ -65,6 +66,14 @@ def list_captures(device_label: str, session: Session = Depends(get_session)):
         raise HTTPException(404, "Unknown device")
     captures = session.exec(select(Capture).where(Capture.device_id == device.id)).all()
     return captures
+
+
+@router.get("/captures/{capture_id}/summary")
+def capture_summary(capture_id: int, session: Session = Depends(get_session)):
+    capture = session.get(Capture, capture_id)
+    if capture is None:
+        raise HTTPException(404, "Unknown capture")
+    return build_capture_summary(session, capture_id)
 
 
 @router.post("/captures/{capture_id}/diagnose")

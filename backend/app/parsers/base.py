@@ -93,6 +93,89 @@ class ForegroundServiceFacts:
 
 
 @dataclass
+class ProcessFreezeEvent:
+    """One `ActivityManager: freezing <pid> <process>` or
+    `ActivityManager: sync unfroze <pid> <process> for <ms>` logcat line.
+    The cached-process freezer is Android's mechanism for pausing
+    background-process CPU/binder activity; a process stuck frozen (or
+    thrashing freeze/unfreeze) is a common root cause of "app didn't
+    respond to X" reports that isn't visible in any dumpsys snapshot.
+    """
+
+    timestamp: str                 # "MM-DD HH:MM:SS.mmm", device-local
+    event_type: str                # "freeze" | "unfreeze"
+    pid: int
+    process: str                   # full process name, e.g. "com.android.vending:background"
+    package: str                   # process name up to the first ':'
+    # The trailing "for N" on an unfreeze line. N takes only a handful of
+    # small values (observed: 1,3,4,6,7,10,19) -- that's a reason-code enum
+    # from AOSP's CachedAppOptimizer, not a duration in ms. Reported as the
+    # raw code rather than guessing/asserting a unit we haven't confirmed.
+    unfreeze_reason_code: Optional[int]
+    source_ref: SourceRef
+
+
+@dataclass
+class CrashEvent:
+    """A Java `FATAL EXCEPTION` crash, parsed from the system log's
+    AndroidRuntime lines:
+
+        E AndroidRuntime: FATAL EXCEPTION: <thread>
+        E AndroidRuntime: Process: <package>, PID: <pid>
+        E AndroidRuntime: <ExceptionClass>: <message>
+    """
+
+    timestamp: str
+    thread: str
+    package: Optional[str]
+    pid: Optional[int]
+    exception_class: Optional[str]
+    message: Optional[str]
+    source_ref: SourceRef
+
+
+@dataclass
+class NativeCrashFile:
+    """A tombstone file present in the bugreport zip (FS/data/tombstones/).
+    We report its existence and filename/timestamp -- these are binary
+    native-crash dumps, not something this MVP parses the contents of."""
+
+    filename: str
+    modified_at: str  # as reported by the zip entry, device-local
+
+
+@dataclass
+class DeviceInfo:
+    """Static device/build facts pulled from the bugreport's plain-text
+    preamble and its `getprop` (SYSTEM PROPERTIES) dump. Every field is
+    Optional -- a bugreport from a different OS version/vendor build may
+    not print all of these, and an absent field is reported as unknown
+    rather than guessed.
+    """
+
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    android_release: Optional[str] = None
+    sdk_version: Optional[int] = None
+    build_id: Optional[str] = None
+    build_fingerprint: Optional[str] = None
+    security_patch: Optional[str] = None
+    bootloader: Optional[str] = None
+    radio: Optional[str] = None
+    network: Optional[str] = None
+    kernel: Optional[str] = None
+    serial: Optional[str] = None
+    cpu_abi: Optional[str] = None
+    hardware: Optional[str] = None
+    build_type: Optional[str] = None
+    uptime: Optional[str] = None
+    timezone: Optional[str] = None
+    crypto_state: Optional[str] = None
+    verified_boot_state: Optional[str] = None
+    debuggable: Optional[bool] = None
+
+
+@dataclass
 class ParsedCapture:
     """Everything a capture's ingestion pipeline produced, ground-truth facts only."""
 
@@ -101,4 +184,8 @@ class ParsedCapture:
     packages: dict[str, PackageFacts] = field(default_factory=dict)
     media_sessions: list[MediaSessionFacts] = field(default_factory=list)
     foreground_services: list[ForegroundServiceFacts] = field(default_factory=list)
+    freeze_events: list[ProcessFreezeEvent] = field(default_factory=list)
+    crash_events: list[CrashEvent] = field(default_factory=list)
+    native_crash_files: list[NativeCrashFile] = field(default_factory=list)
+    device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

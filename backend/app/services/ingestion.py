@@ -10,10 +10,41 @@ from pathlib import Path
 
 from app.parsers import WANTED_SECTIONS, ParsedCapture
 from app.parsers.audio_focus import parse_audio_focus
+from app.parsers.base import NativeCrashFile
+from app.parsers.crash_events import parse_crash_events
+from app.parsers.device_info import parse_device_info
 from app.parsers.foreground_service import parse_foreground_services
+from app.parsers.freeze_events import parse_freeze_events
 from app.parsers.media_session import parse_media_sessions
 from app.parsers.package_info import parse_packages
 from app.parsers.section_extractor import extract_sections
+
+TOMBSTONE_PREFIX = "FS/data/tombstones/"
+
+
+def list_native_crash_files(zf: zipfile.ZipFile) -> list[NativeCrashFile]:
+    """Tombstones are binary native-crash dumps stored as separate files in
+    the zip, not text inside the flattened bugreport txt. We report their
+    existence (filename + timestamp) directly from the zip's own file
+    listing -- real evidence, no re-parse of the huge txt needed. The
+    `.pb` (protobuf) copy of each tombstone is skipped so each crash is
+    counted once.
+    """
+    out = []
+    for info in zf.infolist():
+        name = info.filename
+        if not name.startswith(TOMBSTONE_PREFIX) or name.endswith(".pb"):
+            continue
+        base = name[len(TOMBSTONE_PREFIX):]
+        if "/" in base or not base.startswith("tombstone_"):
+            continue
+        out.append(NativeCrashFile(
+            filename=base,
+            modified_at=f"{info.date_time[0]:04d}-{info.date_time[1]:02d}-{info.date_time[2]:02d} "
+                        f"{info.date_time[3]:02d}:{info.date_time[4]:02d}:{info.date_time[5]:02d}",
+        ))
+    out.sort(key=lambda f: f.modified_at)
+    return out
 
 
 def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
@@ -21,6 +52,7 @@ def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
 
     with zipfile.ZipFile(zip_path) as zf:
         sections = extract_sections(zf, WANTED_SECTIONS)
+        capture.native_crash_files = list_native_crash_files(zf)
 
     if "audio" in sections:
         capture.focus_stack, capture.focus_events = parse_audio_focus(sections["audio"])
@@ -41,5 +73,19 @@ def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
         capture.foreground_services = parse_foreground_services(sections["activity"])
     else:
         capture.parse_warnings.append("No 'activity' dumpsys section found")
+
+    if "system_log" in sections:
+        capture.freeze_events = parse_freeze_events(sections["system_log"])
+        capture.crash_events = parse_crash_events(sections["system_log"])
+    else:
+        capture.parse_warnings.append("No 'SYSTEM LOG' section found")
+
+    capture.device_info = parse_device_info(
+        sections.get("preamble"), sections.get("system_properties")
+    )
+    if "preamble" not in sections:
+        capture.parse_warnings.append("No preamble header block found")
+    if "system_properties" not in sections:
+        capture.parse_warnings.append("No 'SYSTEM PROPERTIES' section found")
 
     return capture
