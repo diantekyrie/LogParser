@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 
 const SEVERITY_COLOR = { critical: "var(--red)", warning: "var(--amber)", info: "var(--blue)" };
 const CONFIDENCE_COLOR = { HIGH: "var(--green)", MEDIUM: "var(--amber)", LOW: "var(--orange)", UNCONFIRMED: "var(--muted)" };
@@ -7,6 +7,49 @@ async function api(path, opts) {
   const res = await fetch(`/api${path}`, opts);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+function searchable(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.toLowerCase();
+  return JSON.stringify(value).toLowerCase();
+}
+
+function matchesQuery(value, query) {
+  const q = query.trim().toLowerCase();
+  return !q || searchable(value).includes(q);
+}
+
+function timestampMinutes(timestamp) {
+  if (!timestamp) return null;
+  const match = String(timestamp).match(/\b(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?\b/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function matchesIncidentWindow(timestamp, center, windowMinutes) {
+  if (!center) return true;
+  const eventMinutes = timestampMinutes(timestamp);
+  const centerMinutes = timestampMinutes(center);
+  if (eventMinutes === null || centerMinutes === null) return false;
+  const direct = Math.abs(eventMinutes - centerMinutes);
+  return Math.min(direct, 1440 - direct) <= windowMinutes;
+}
+
+function downloadText(filename, text, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function packageLike(row) {
+  return row?.package ?? row?.executable ?? row?.uid_token ?? row?.label ?? "";
 }
 
 function SourceTag({ source }) {
@@ -69,6 +112,66 @@ function Timeline({ events }) {
   );
 }
 
+function TriageControls({
+  appFilter,
+  setAppFilter,
+  timelineFilter,
+  setTimelineFilter,
+  incidentTime,
+  setIncidentTime,
+  incidentWindow,
+  setIncidentWindow,
+  onExportSummary,
+  exportSummaryDisabled,
+}) {
+  return (
+    <section className="panel triage-panel">
+      <div className="triage-head">
+        <h2>Local triage controls</h2>
+        <button type="button" onClick={onExportSummary} disabled={exportSummaryDisabled}>Export summary JSON</button>
+      </div>
+      <div className="triage-grid">
+        <label>
+          App / package filter
+          <input
+            type="text"
+            placeholder="package, app, UID, executable"
+            value={appFilter}
+            onChange={(e) => setAppFilter(e.target.value)}
+          />
+        </label>
+        <label>
+          Timeline text filter
+          <input
+            type="text"
+            placeholder="crash, wifi, bluetooth, reason..."
+            value={timelineFilter}
+            onChange={(e) => setTimelineFilter(e.target.value)}
+          />
+        </label>
+        <label>
+          Incident time
+          <input
+            type="time"
+            value={incidentTime}
+            onChange={(e) => setIncidentTime(e.target.value)}
+          />
+        </label>
+        <label>
+          Window +/- minutes
+          <input
+            type="number"
+            min="1"
+            max="240"
+            value={incidentWindow}
+            onChange={(e) => setIncidentWindow(Number(e.target.value) || 1)}
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function ClaimCard({ claim }) {
   const s = claim.verified_state;
   return (
@@ -119,6 +222,10 @@ export default function App() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [providers, setProviders] = useState([]);
   const [provider, setProvider] = useState("");
+  const [appFilter, setAppFilter] = useState("");
+  const [timelineFilter, setTimelineFilter] = useState("");
+  const [incidentTime, setIncidentTime] = useState("");
+  const [incidentWindow, setIncidentWindow] = useState(15);
 
   const refreshDevices = useCallback(() => {
     api("/devices").then(setDevices).catch(() => {});
@@ -217,6 +324,53 @@ export default function App() {
   }
 
   const c = summary?.counts;
+  const filtered = useMemo(() => {
+    if (!summary) return null;
+    const appMatches = (row) => matchesQuery(packageLike(row), appFilter) || matchesQuery(row, appFilter);
+    const timeMatches = (row) => matchesIncidentWindow(row.timestamp, incidentTime, incidentWindow);
+    return {
+      crash_events: summary.crash_events.filter((row) => appMatches(row) && timeMatches(row)),
+      anrs: summary.anrs.filter((row) => appMatches(row) && timeMatches(row)),
+      tombstones: summary.tombstones.filter((row) => appMatches(row) && timeMatches(row)),
+      top_battery_consumers: summary.top_battery_consumers.filter(appMatches),
+      wifi_events: summary.wifi_events.filter((row) => matchesQuery(row, appFilter) && timeMatches(row)),
+      top_freeze_offenders: summary.top_freeze_offenders.filter(appMatches),
+      media_sessions: summary.media_sessions.filter(appMatches),
+      timeline: summary.timeline.filter((row) => (
+        matchesQuery(row, timelineFilter)
+        && matchesQuery(row, appFilter)
+        && matchesIncidentWindow(row.timestamp, incidentTime, incidentWindow)
+      )),
+    };
+  }, [summary, appFilter, timelineFilter, incidentTime, incidentWindow]);
+
+  function exportSummary() {
+    if (!summary) return;
+    downloadText(
+      `groundtruth-capture-${summary.capture_id}-summary.json`,
+      JSON.stringify(summary, null, 2),
+      "application/json",
+    );
+  }
+
+  function exportDiagnosis() {
+    if (!diagnosis || !summary) return;
+    const report = [
+      "groundtruth diagnosis export",
+      `capture: #${summary.capture_id} ${summary.original_filename}`,
+      `provider: ${diagnosis.provider || "auto"}`,
+      "",
+      "question:",
+      diagnosis.bundle.question,
+      "",
+      "report:",
+      diagnosis.report || `LLM narration failed: ${diagnosis.llm_error}`,
+      "",
+      "verified fact bundle:",
+      JSON.stringify(diagnosis.bundle, null, 2),
+    ].join("\n");
+    downloadText(`groundtruth-capture-${summary.capture_id}-diagnosis.txt`, report);
+  }
 
   return (
     <div className="app">
@@ -274,6 +428,19 @@ export default function App() {
 
           {summary && (
             <>
+              <TriageControls
+                appFilter={appFilter}
+                setAppFilter={setAppFilter}
+                timelineFilter={timelineFilter}
+                setTimelineFilter={setTimelineFilter}
+                incidentTime={incidentTime}
+                setIncidentTime={setIncidentTime}
+                incidentWindow={incidentWindow}
+                setIncidentWindow={setIncidentWindow}
+                onExportSummary={exportSummary}
+                exportSummaryDisabled={!summary}
+              />
+
               <section className="panel">
                 <h2>Device information</h2>
                 <DeviceInfoPanel info={summary.device_info} />
@@ -298,13 +465,13 @@ export default function App() {
                 </div>
               </section>
 
-              {summary.crash_events.length > 0 && (
+              {filtered.crash_events.length > 0 && (
                 <section className="panel">
                   <h2>Java crashes</h2>
                   <table className="fact-table">
                     <thead><tr><th>Time</th><th>Package</th><th>Exception</th><th>Message</th><th>Root cause</th><th>Cite</th></tr></thead>
                     <tbody>
-                      {summary.crash_events.map((cr, i) => (
+                      {filtered.crash_events.map((cr, i) => (
                         <tr key={i}>
                           <td>{cr.timestamp}</td><td>{cr.package}</td><td>{cr.exception_class}</td>
                           <td className="small">{cr.message}</td>
@@ -324,13 +491,13 @@ export default function App() {
                 </section>
               )}
 
-              {summary.anrs.length > 0 && (
+              {filtered.anrs.length > 0 && (
                 <section className="panel">
                   <h2>ANRs</h2>
                   <table className="fact-table">
                     <thead><tr><th>Time</th><th>Package</th><th>Reason</th><th>PID</th></tr></thead>
                     <tbody>
-                      {summary.anrs.map((a, i) => (
+                      {filtered.anrs.map((a, i) => (
                         <tr key={i}>
                           <td>{a.timestamp}</td><td>{a.package ?? <span className="muted">unattributed</span>}</td>
                           <td className="small">{a.reason}</td><td>{a.pid}</td>
@@ -341,13 +508,13 @@ export default function App() {
                 </section>
               )}
 
-              {summary.tombstones.length > 0 && (
+              {filtered.tombstones.length > 0 && (
                 <section className="panel">
                   <h2>Native crashes (tombstones)</h2>
                   <table className="fact-table">
                     <thead><tr><th>Time</th><th>Package / executable</th><th>Signal</th><th>Top frame</th></tr></thead>
                     <tbody>
-                      {summary.tombstones.map((t, i) => (
+                      {filtered.tombstones.map((t, i) => (
                         <tr key={i}>
                           <td className="small">{t.timestamp ?? t.modified_at}</td>
                           <td>{t.package ?? <span className="muted">{t.executable ?? "unattributed"}</span>}</td>
@@ -392,14 +559,14 @@ export default function App() {
                 </section>
               )}
 
-              {summary.top_battery_consumers.length > 0 && (
+              {filtered.top_battery_consumers.length > 0 && (
                 <section className="panel">
                   <h2>Top battery consumers</h2>
                   <p className="muted small">Estimated mAh per app/UID for this capture. Package is unattributed (not guessed) for shared system UIDs.</p>
                   <table className="fact-table">
                     <thead><tr><th>App / UID</th><th>Total (mAh)</th><th>Breakdown</th><th>Cite</th></tr></thead>
                     <tbody>
-                      {summary.top_battery_consumers.map((b, i) => (
+                      {filtered.top_battery_consumers.map((b, i) => (
                         <tr key={i}>
                           <td>{b.package ?? <span className="muted">{b.uid_token} (unattributed)</span>}</td>
                           <td>{b.total_mah.toFixed(2)}</td>
@@ -414,13 +581,13 @@ export default function App() {
                 </section>
               )}
 
-              {summary.wifi_events.filter((w) => w.kind === "disconnection").length > 0 && (
+              {filtered.wifi_events.filter((w) => w.kind === "disconnection").length > 0 && (
                 <section className="panel">
                   <h2>Wi-Fi disconnections</h2>
                   <table className="fact-table">
                     <thead><tr><th>Time</th><th>SSID</th><th>Reason</th><th>Locally initiated</th><th>Cite</th></tr></thead>
                     <tbody>
-                      {summary.wifi_events.filter((w) => w.kind === "disconnection").map((w, i) => (
+                      {filtered.wifi_events.filter((w) => w.kind === "disconnection").map((w, i) => (
                         <tr key={i}>
                           <td className="small">{w.timestamp}</td><td>{w.ssid}</td>
                           <td className={!w.locally_generated ? "warn-text" : ""}>{w.reason_name}</td>
@@ -433,13 +600,13 @@ export default function App() {
                 </section>
               )}
 
-              {summary.top_freeze_offenders.length > 0 && (
+              {filtered.top_freeze_offenders.length > 0 && (
                 <section className="panel">
                   <h2>Top freeze/unfreeze offenders</h2>
                   <table className="fact-table">
                     <thead><tr><th>Package</th><th>Freezes</th><th>Unfreezes</th></tr></thead>
                     <tbody>
-                      {summary.top_freeze_offenders.map((o) => (
+                      {filtered.top_freeze_offenders.map((o) => (
                         <tr key={o.package}><td>{o.package}</td><td>{o.freezes}</td><td>{o.unfreezes}</td></tr>
                       ))}
                     </tbody>
@@ -449,11 +616,11 @@ export default function App() {
 
               <section className="panel">
                 <h2>Media sessions</h2>
-                {summary.media_sessions.length === 0 ? <p className="muted small">No media sessions parsed.</p> : (
+                {filtered.media_sessions.length === 0 ? <p className="muted small">No media sessions parsed or matched.</p> : (
                   <table className="fact-table">
                     <thead><tr><th>Package</th><th>State</th><th>Active</th><th>Position (ms)</th><th>Cite</th></tr></thead>
                     <tbody>
-                      {summary.media_sessions.map((m, i) => (
+                      {filtered.media_sessions.map((m, i) => (
                         <tr key={i}>
                           <td>{m.package}</td><td>{m.playback_state ?? "unknown"}</td>
                           <td>{String(m.active)}</td><td>{m.position_ms}</td>
@@ -467,7 +634,7 @@ export default function App() {
 
               <section className="panel">
                 <h2>Event timeline</h2>
-                <Timeline events={summary.timeline} />
+                <Timeline events={filtered.timeline} />
               </section>
 
               <section className="panel">
@@ -505,7 +672,8 @@ export default function App() {
                     <p className="muted">No app named in the question matched a known package — nothing to verify.</p>
                   )}
                   {diagnosis.bundle.claims.map((cl) => <ClaimCard key={cl.package} claim={cl} />)}
-                  <h3>Report {diagnosis.provider && <span className="muted small">— narrated by {providers.find((p) => p.id === diagnosis.provider)?.label || diagnosis.provider}</span>}</h3>
+                  <h3>Report {diagnosis.provider && <span className="muted small"> - narrated by {providers.find((p) => p.id === diagnosis.provider)?.label || diagnosis.provider}</span>}</h3>
+                  <button type="button" className="secondary-btn" onClick={exportDiagnosis}>Export diagnosis</button>
                   {diagnosis.report ? (
                     <pre className="report">{diagnosis.report}</pre>
                   ) : (
@@ -555,6 +723,8 @@ export default function App() {
         }
         button:hover:not(:disabled) { background: var(--accent-dark); }
         button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .secondary-btn { margin-bottom: 10px; background: #273247; color: var(--text); }
+        .secondary-btn:hover:not(:disabled) { background: #32405a; }
         .error { color: var(--red); padding: 12px; border: 1px solid var(--red); border-radius: 6px; white-space: pre-wrap; font-size: 13px; }
         .muted { color: var(--muted); }
         .small { font-size: 12px; }
@@ -565,6 +735,15 @@ export default function App() {
         .capture-list li:hover { background: #0e1420; }
         .capture-list li.active { border-color: var(--accent); background: #1a1408; }
         .cap-name { font-size: 13px; }
+
+        .triage-panel { position: sticky; top: 0; z-index: 2; }
+        .triage-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+        .triage-head h2 { margin-bottom: 0; }
+        .triage-grid { display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(180px, 1.3fr) 130px 130px; gap: 12px; align-items: end; }
+        input[type=number], input[type=time] {
+          display: block; width: 100%; margin-top: 6px; padding: 9px 10px; font: inherit; font-size: 14px;
+          background: #0e1420; color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px;
+        }
 
         .device-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 24px; }
         .device-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px dashed #1c2433; font-size: 13px; }
@@ -596,6 +775,17 @@ export default function App() {
         .badge { color: #10131a; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 10px; }
         .history { margin-top: 8px; font-size: 12px; background: #10151f; padding: 8px; border-radius: 6px; color: var(--muted); }
         .report { white-space: pre-wrap; background: #0e1420; padding: 12px; border-radius: 6px; font-size: 13px; max-height: 420px; overflow: auto; border: 1px solid var(--panel-border); }
+        @media (max-width: 900px) {
+          .layout { grid-template-columns: 1fr; }
+          .sidebar, .triage-panel { position: static; }
+          .triage-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 620px) {
+          .topbar, .ask-row, .triage-head { flex-direction: column; align-items: stretch; }
+          .triage-grid, .device-grid { grid-template-columns: 1fr; }
+          .timeline-row { grid-template-columns: 10px 1fr; }
+          .timeline-ts, .timeline-label, .src { grid-column: 2; }
+        }
       `}</style>
     </div>
   );
