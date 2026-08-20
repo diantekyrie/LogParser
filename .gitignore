@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+node_modules/
+dist/
+build/
+*.db
+*.sqlite3
+.env
+.DS_Store
+
+# large real bugreport fixtures stay local; parsers are tested against them
+# but they should not bloat the git history
+backend/tests/fixtures/*.zip
+backend/tests/fixtures/_inspect/
