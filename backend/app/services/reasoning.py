@@ -23,6 +23,7 @@ from app.models.db_models import (
     BtHciEventRow,
     BtHciSummaryRow,
     CdmPairingEventRow,
+    CompanionDeviceAssociationRow,
     CrashEventRow,
     PacketCaptureSummaryRow,
     TombstoneRow,
@@ -104,7 +105,14 @@ numbers). Rules, no exceptions:
    "packet_capture_summary", those are supporting evidence (HCI event
    counts, or raw packet-capture metadata) -- packet_capture_summary in
    particular cannot identify what a network error was, only that a
-   capture exists; say so if asked to characterize the error itself.
+   capture exists; say so if asked to characterize the error itself. If
+   "device_wide_pairing_evidence" includes a "current_associations" list,
+   that's the CDM service's OWN current-state record of each paired
+   device at the moment the bugreport was taken -- not reconstructed from
+   log messages, so it's the most direct answer to "is this device
+   currently paired/connected" available in this bundle. Still carry its
+   confidence label forward verbatim (rule 2); it is a single fact from a
+   single capture unless corroborated elsewhere.
 """
 
 
@@ -328,6 +336,30 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
                 for e in pairing_events
             ],
         }
+        # The service's own current-state association snapshot -- a
+        # materially stronger source than the log-line events above, since
+        # it's not reconstructed from a sequence of messages but reported
+        # directly by CDM at the moment the bugreport was taken. Real gap
+        # found live: this "DUMP OF SERVICE companiondevice" section was
+        # being extracted from the bugreport but never had a parser wired
+        # to it at all, so "is this device currently paired/connected" had
+        # to be inferred from log anomalies even when the authoritative
+        # answer was sitting a few hundred lines away the whole time.
+        associations = session.exec(
+            select(CompanionDeviceAssociationRow).where(CompanionDeviceAssociationRow.capture_id == capture_id)
+        ).all()
+        if associations:
+            bundle["device_wide_pairing_evidence"]["current_associations"] = [
+                {"association_id": a.association_id, "mac_address": a.mac_address,
+                 "display_name": a.display_name, "package_name": a.package_name,
+                 "device_profile": a.device_profile, "revoked": a.revoked, "pending": a.pending,
+                 "trusted": a.trusted, "time_approved": a.time_approved,
+                 "last_time_connected": a.last_time_connected,
+                 "currently_connected": a.currently_connected,
+                 "confidence": pairing_confidence, "corroboration": pairing_corroboration,
+                 "source": {"section": a.source_section, "line_start": a.source_line_start, "line_end": a.source_line_end}}
+                for a in associations
+            ]
         bt_row = session.exec(
             select(BtHciSummaryRow).where(BtHciSummaryRow.capture_id == capture_id)
         ).first()

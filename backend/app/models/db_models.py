@@ -280,6 +280,26 @@ class CdmPairingEventRow(SQLModel, table=True):
     source_line_end: int
 
 
+class CompanionDeviceAssociationRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    association_id: int
+    mac_address: Optional[str] = Field(default=None, index=True)
+    display_name: Optional[str]
+    package_name: Optional[str] = Field(default=None, index=True)
+    device_profile: Optional[str]
+    self_managed: Optional[bool]
+    revoked: Optional[bool]
+    pending: Optional[bool]
+    trusted: Optional[bool]
+    time_approved: Optional[str]
+    last_time_connected: Optional[str]
+    currently_connected: Optional[bool]
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
 class WifiEventRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)

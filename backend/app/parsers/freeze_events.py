@@ -34,7 +34,7 @@ def parse_freeze_events(section: Section) -> list[ProcessFreezeEvent]:
 
     for i, raw in enumerate(section.lines):
         abs_line = section.line_start + i
-        ref = SourceRef("system_log", abs_line, abs_line)
+        ref = SourceRef(section.name, abs_line, abs_line)
 
         m = FREEZE_RE.match(raw)
         if m:

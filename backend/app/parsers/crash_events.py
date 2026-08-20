@@ -118,7 +118,7 @@ def parse_crash_events(section: Section) -> list[CrashEvent]:
             exception_class=exception_class, message=message,
             root_cause_class=root_cause_class, root_cause_message=root_cause_message,
             root_cause_frame=root_cause_frame,
-            source_ref=SourceRef("system_log", start_line, end_line),
+            source_ref=SourceRef(section.name, start_line, end_line),
         ))
         i += 1
 

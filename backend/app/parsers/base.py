@@ -369,6 +369,31 @@ class CdmPairingEvent:
 
 
 @dataclass
+class CompanionDeviceAssociation:
+    """One entry from `DUMP OF SERVICE companiondevice`'s "Companion Device
+    Associations:" list -- the CDM service's OWN current-state record of a
+    paired companion device at the moment the bugreport was taken, not
+    reconstructed from log-line events (contrast with CdmPairingEvent).
+    `currently_connected` is cross-referenced from the same section's
+    "Connected Bluetooth Devices:" list by matching mac_address.
+    """
+
+    association_id: int
+    mac_address: Optional[str]
+    display_name: Optional[str]
+    package_name: Optional[str]
+    device_profile: Optional[str]
+    self_managed: Optional[bool]
+    revoked: Optional[bool]
+    pending: Optional[bool]
+    trusted: Optional[bool]
+    time_approved: Optional[str]        # raw Java Date.toString(), e.g. "Thu Jun 25 10:08:12 PDT 2026"
+    last_time_connected: Optional[str]  # raw value, "None" if never connected since approval
+    currently_connected: Optional[bool]
+    source_ref: SourceRef
+
+
+@dataclass
 class ParsedCapture:
     """Everything a capture's ingestion pipeline produced, ground-truth facts only."""
 
@@ -386,5 +411,6 @@ class ParsedCapture:
     wifi_events: list[WifiEvent] = field(default_factory=list)
     battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
     cdm_pairing_events: list[CdmPairingEvent] = field(default_factory=list)
+    companion_device_associations: list[CompanionDeviceAssociation] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

@@ -63,7 +63,7 @@ def parse_cdm_pairing_events(section: Section) -> list[CdmPairingEvent]:
             continue
         ts, level, tag, rest = m.group("ts"), m.group("level"), m.group("tag"), m.group("rest")
         abs_line = section.line_start + i
-        ref = SourceRef("system_log", abs_line, abs_line)
+        ref = SourceRef(section.name, abs_line, abs_line)
         is_cdm = bool(CDM_TAG_RE.match(tag))
 
         if not is_cdm:

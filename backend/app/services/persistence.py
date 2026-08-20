@@ -17,6 +17,7 @@ from app.models.db_models import (
     BtHciSummaryRow,
     Capture,
     CdmPairingEventRow,
+    CompanionDeviceAssociationRow,
     CrashEventRow,
     Device,
     DeviceInfoRow,
@@ -243,6 +244,18 @@ def persist_capture(
             source_section=e.source_ref.section,
             source_line_start=e.source_ref.line_start,
             source_line_end=e.source_ref.line_end,
+        ))
+
+    for a in parsed.companion_device_associations:
+        session.add(CompanionDeviceAssociationRow(
+            capture_id=capture.id, association_id=a.association_id, mac_address=a.mac_address,
+            display_name=a.display_name, package_name=a.package_name, device_profile=a.device_profile,
+            self_managed=a.self_managed, revoked=a.revoked, pending=a.pending, trusted=a.trusted,
+            time_approved=a.time_approved, last_time_connected=a.last_time_connected,
+            currently_connected=a.currently_connected,
+            source_section=a.source_ref.section,
+            source_line_start=a.source_ref.line_start,
+            source_line_end=a.source_ref.line_end,
         ))
 
     freeze_counts: Counter = Counter()

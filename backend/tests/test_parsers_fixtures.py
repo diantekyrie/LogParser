@@ -369,6 +369,71 @@ def _minimal_btsnoop_bytes() -> bytes:
     return header + record
 
 
+def test_companion_device_associations_exclude_removed_and_handle_apostrophes(capture1):
+    # Real gap found live against this exact fixture: mId=3 ("Diante's
+    # Pixel Buds Pro 2") only appears under "Last Removed Association:",
+    # not "Companion Device Associations:" -- it must NOT show up as a
+    # currently-active association. mId=2's display name itself contains
+    # an apostrophe ("Diante's Pixel Buds 2a"), which broke a naive
+    # `'([^']*)'` regex match before the fix in companion_device.py.
+    assoc_ids = {a.association_id for a in capture1.companion_device_associations}
+    assert 3 not in assoc_ids  # removed association excluded
+    assert assoc_ids == {2, 4, 5, 6}
+
+    buds = next(a for a in capture1.companion_device_associations if a.association_id == 2)
+    assert buds.display_name == "Diante's Pixel Buds 2a"
+    assert buds.mac_address == "5a:dd:5a:87:74:0d"
+    # Cross-referenced against "Connected Bluetooth Devices:" in the same
+    # section -- this one's mac address is in that list, the others aren't.
+    assert buds.currently_connected is True
+    watch = next(a for a in capture1.companion_device_associations if a.association_id == 4)
+    assert watch.currently_connected is False
+
+
+def test_logcat_history_normalizes_timestamp_precision_and_dedups(tmp_path):
+    # Real gap found live: the persistent rotated logcat.NN buffer files
+    # (up to 63 of them on a real device) were never read at all, and when
+    # they were, a real overlap between the live "system_log" window and a
+    # rotated file's content would double-count the identical event. This
+    # also exercises the 6-digit microsecond -> 3-digit millisecond
+    # timestamp normalization those files need (system_log uses 3 digits).
+    import zipfile
+
+    zip_path = tmp_path / "synthetic_bugreport.zip"
+    freeze_line_live = (
+        "08-13 22:36:22.190  1000  2046  2922 D ActivityManager: "
+        "freezing 28798 com.android.vending:background\n"
+    )
+    # Same event, same millisecond, but as it's actually stored on-device:
+    # 6-digit microsecond precision.
+    freeze_line_history_dup = (
+        "08-13 22:36:22.190123  1000  2046  2922 D ActivityManager: "
+        "freezing 28798 com.android.vending:background\n"
+    )
+    freeze_line_history_unique = (
+        "08-12 09:00:00.000000  1000  2046  2922 D ActivityManager: "
+        "freezing 555 com.example.other:background\n"
+    )
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "bugreport-synthetic-2026-01-01-00-00-00.txt",
+            "------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v) ------\n"
+            + freeze_line_live
+            + "------ 0.001s was the duration of 'SYSTEM LOG' ------\n",
+        )
+        zf.writestr("FS/data/misc/logd/logcat.01", freeze_line_history_dup)
+        zf.writestr("FS/data/misc/logd/logcat.02", freeze_line_history_unique)
+        # The bare, unrotated "logcat" file is deliberately never read.
+        zf.writestr("FS/data/misc/logd/logcat", freeze_line_history_unique)
+
+    cap = parse_bugreport_zip(zip_path)
+    assert len(cap.freeze_events) == 2  # the live/history duplicate collapsed to one
+    sections = {e.source_ref.section for e in cap.freeze_events}
+    assert sections == {"system_log", "logcat.02"}
+    processes = {e.process for e in cap.freeze_events}
+    assert processes == {"com.android.vending:background", "com.example.other:background"}
+
+
 def test_bt_hci_log_found_under_real_world_filename_variant(tmp_path):
     # Real gap found live against two actual bugreports (a Pixel phone and a
     # Pixel Watch, neither the committed test fixture): the HCI log ships as

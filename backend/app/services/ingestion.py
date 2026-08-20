@@ -14,16 +14,39 @@ from app.parsers.audio_focus import parse_audio_focus
 from app.parsers.battery_stats import parse_battery_uid_stats
 from app.parsers.bt_hci import parse_bt_hci_log
 from app.parsers.cdm_pairing import parse_cdm_pairing_events
+from app.parsers.companion_device import parse_companion_device_associations
 from app.parsers.crash_events import parse_crash_events
 from app.parsers.device_info import parse_device_info
 from app.parsers.foreground_service import parse_foreground_services
 from app.parsers.freeze_events import parse_freeze_events
+from app.parsers.logcat_history import parse_logcat_history
 from app.parsers.media_session import parse_media_sessions
 from app.parsers.package_info import parse_packages
 from app.parsers.pcap import parse_pcap
 from app.parsers.section_extractor import extract_sections, extract_sections_from_text
 from app.parsers.tombstone import parse_tombstone
 from app.parsers.wifi import parse_wifi_events
+
+def _dedup_by_key(events: list, key_fn) -> list:
+    """Keeps the first occurrence of each distinct key, dropping later
+    ones. Used when merging system_log-derived events with logcat-history
+    events: the on-device persistent buffer and the live logcat capture at
+    dump time can genuinely overlap in time, printing the identical event
+    to both -- same content, different file. Since the system_log-derived
+    list is always concatenated first, this keeps that citation (the more
+    familiar section name) over an identical logcat.NN duplicate, while
+    leaving every non-duplicate historical event untouched.
+    """
+    seen = set()
+    out = []
+    for e in events:
+        k = key_fn(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
 
 TOMBSTONE_PREFIX = "FS/data/tombstones/"
 ANR_PREFIX = "FS/data/anr/"
@@ -143,6 +166,11 @@ def _parse_sections_into_capture(capture: ParsedCapture, sections: dict) -> Pars
     else:
         capture.parse_warnings.append("No 'wifi' dumpsys section found")
 
+    if "companiondevice" in sections:
+        capture.companion_device_associations = parse_companion_device_associations(sections["companiondevice"])
+    else:
+        capture.parse_warnings.append("No 'companiondevice' dumpsys section found")
+
     capture.device_info = parse_device_info(
         sections.get("preamble"), sections.get("system_properties")
     )
@@ -176,7 +204,28 @@ def parse_bugreport_zip(zip_path: str | Path) -> ParsedCapture:
         else:
             capture.parse_warnings.append("No Bluetooth HCI snoop log found")
 
-    return _parse_sections_into_capture(capture, sections)
+        history_freezes, history_crashes, history_cdm = parse_logcat_history(zf)
+
+    capture = _parse_sections_into_capture(capture, sections)
+    # Merge in facts found in the persistent rotated logcat.NN buffer files
+    # (history beyond the live "system_log" window). The live capture and
+    # a rotated file can genuinely overlap in time (same event flushed to
+    # both), so this dedups on content, not just appends -- otherwise an
+    # overlapping event would double its apparent corroboration count for
+    # no real reason.
+    capture.freeze_events = _dedup_by_key(
+        capture.freeze_events + history_freezes,
+        lambda e: (e.timestamp, e.event_type, e.pid, e.process),
+    )
+    capture.crash_events = _dedup_by_key(
+        capture.crash_events + history_crashes,
+        lambda e: (e.timestamp, e.thread, e.package, e.pid, e.exception_class, e.message),
+    )
+    capture.cdm_pairing_events = _dedup_by_key(
+        capture.cdm_pairing_events + history_cdm,
+        lambda e: (e.timestamp, e.tag, e.kind, e.detail),
+    )
+    return capture
 
 
 def parse_bugreport_txt(txt_path: str | Path) -> ParsedCapture:
