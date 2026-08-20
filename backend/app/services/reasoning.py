@@ -37,7 +37,18 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
 )
 
 CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
-WIFI_TRIGGER_RE = re.compile(r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam)\w*\b", re.IGNORECASE)
+# Real gap found live: a "was there a network issue on these devices" question
+# didn't match this trigger at all (no "wifi"/"disconnect"/"drop"/"roam"
+# token), so device_wide_wifi_evidence never made it into the bundle even
+# though the capture had a real Wi-Fi disconnection event with an 802.11
+# reason code sitting in it. Two different LLM providers then both honestly
+# (and correctly, given their bundle) said "no wifi evidence present" --
+# which was true of the bundle but not of the capture. "network"/"internet"
+# added so a network-flavored question always at least checks for Wi-Fi
+# disconnects, same principle as the pairing-trigger gap fixed earlier.
+WIFI_TRIGGER_RE = re.compile(
+    r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam|network|internet)\w*\b", re.IGNORECASE
+)
 BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.IGNORECASE)
 PAIRING_TRIGGER_RE = re.compile(
     r"\b(pair(?:ed|ing)?|bond(?:ed|ing)?|bluetooth|\bbt\b|companion|network|connect(?:ed|ion)?)\b",
