@@ -17,9 +17,11 @@ from sqlmodel import Session, select
 
 from app.models.db_models import (
     Capture,
+    CrashEventRow,
     FocusEventRow,
     FocusStackEntryRow,
     ForegroundServiceRow,
+    FreezeSummaryRow,
     MediaSessionRow,
     PackageFactRow,
 )
@@ -51,6 +53,9 @@ class EntityVerification:
     latest_focus_event: dict | None            # {"event_type", "timestamp", "detail", "source"}
     target_sdk: int | None
     target_sdk_source: dict | None
+    crash_events: list[dict]           # Java FATAL EXCEPTION crashes attributed to this package
+    freeze_count: int
+    unfreeze_count: int
     corroborating_fact_count: int
 
 
@@ -115,7 +120,22 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
         )
     ).first()
 
+    crash_rows = session.exec(
+        select(CrashEventRow).where(
+            CrashEventRow.capture_id == capture_id, CrashEventRow.package == package
+        )
+    ).all()
+
+    freeze_summary = session.exec(
+        select(FreezeSummaryRow).where(
+            FreezeSummaryRow.capture_id == capture_id, FreezeSummaryRow.package == package
+        )
+    ).first()
+
     corroborating = sum(x is not None for x in (focus_top, media, latest_event, pkg_fact))
+    corroborating += len(crash_rows)
+    if freeze_summary is not None:
+        corroborating += 1
 
     return EntityVerification(
         package=package,
@@ -138,6 +158,15 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
             {"section": pkg_fact.source_section, "line_start": pkg_fact.source_line_start, "line_end": pkg_fact.source_line_end}
             if pkg_fact else None
         ),
+        crash_events=[
+            {
+                "timestamp": c.timestamp, "exception_class": c.exception_class, "message": c.message,
+                "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end},
+            }
+            for c in crash_rows
+        ],
+        freeze_count=freeze_summary.freeze_count if freeze_summary else 0,
+        unfreeze_count=freeze_summary.unfreeze_count if freeze_summary else 0,
         corroborating_fact_count=corroborating,
     )
 

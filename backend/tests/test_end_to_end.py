@@ -106,3 +106,26 @@ def test_summary_reflects_persisted_facts_not_a_reparse(session):
     assert summary["crash_events"][0]["package"] == "com.android.systemui"
     # Every timeline entry must carry a source citation back to the raw log.
     assert all(e["source"]["line_start"] > 0 for e in summary["timeline"])
+
+
+def test_crash_question_surfaces_device_wide_evidence_without_naming_an_app(session):
+    # Regression: "Was there a crash?" previously came back "unknown" even
+    # though the capture has a real, source-cited crash -- because
+    # verification only ever looked at apps named in the question, and this
+    # question doesn't name one. Crash-shaped questions now get device-wide
+    # crash evidence regardless of whether any app was named.
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Was there a crash on this device?")
+    assert result["bundle"]["claims"] == []
+    evidence = result["bundle"]["device_wide_crash_evidence"]
+    assert len(evidence["java_crashes"]) == 1
+    assert evidence["java_crashes"][0]["package"] == "com.android.systemui"
+    assert evidence["native_crash_file_count"] > 0
+
+
+def test_named_app_crash_data_included_in_its_own_claim(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Did com.android.systemui crash?")
+    claim = next(c for c in result["bundle"]["claims"] if c["package"] == "com.android.systemui")
+    assert len(claim["verified_state"]["crash_events"]) == 1
+    assert claim["verified_state"]["crash_events"][0]["exception_class"] == "DeadSystemException"

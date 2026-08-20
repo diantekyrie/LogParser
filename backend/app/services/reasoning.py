@@ -14,7 +14,10 @@ from dataclasses import asdict, dataclass
 
 from sqlmodel import Session
 
+from sqlmodel import select
+
 from app.llm import get_llm_client
+from app.models.db_models import CrashEventRow, NativeCrashFileRow
 from app.services.correlation import PackageHistory, package_history_across_device
 from app.services.verification import EntityVerification, verify_question_entities
 
@@ -22,6 +25,8 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
     r"\b(never|always|across|history|every capture|all captures|over time|"
     r"week|days|since|before)\b", re.IGNORECASE
 )
+
+CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = """You are a diagnosis-report writer for Android device logs.
 
@@ -40,6 +45,12 @@ numbers). Rules, no exceptions:
 4. Cite the section + line numbers for every factual claim you make.
 5. If a fact was checked across multiple captures, say how many captures it
    was corroborated against, not just "confirmed."
+6. If the bundle includes a top-level "device_wide_crash_evidence" key,
+   that's crash evidence for the WHOLE capture, not filtered to any named
+   app -- use it to answer general crash questions, but never claim it
+   proves a specific app crashed unless a claim's own crash_events says so.
+   Native crash file counts are unattributed; say that plainly rather than
+   guessing which app they belong to.
 """
 
 
@@ -84,6 +95,9 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
             "latest_focus_event": ev.latest_focus_event,
             "target_sdk": ev.target_sdk,
             "target_sdk_source": ev.target_sdk_source,
+            "crash_events": ev.crash_events,
+            "freeze_count": ev.freeze_count,
+            "unfreeze_count": ev.unfreeze_count,
         },
     }
     if history is not None:
@@ -111,6 +125,34 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
         "entities_independently_verified": [c["package"] for c in claims],
         "claims": claims,
     }
+
+    if CRASH_TRIGGER_RE.search(question):
+        # Device-wide crash evidence, surfaced regardless of whether it's
+        # attributable to a named app -- so a crash question never comes
+        # back "unknown" when there's a real crash on the device that
+        # simply wasn't named. Native crash files (tombstones) are binary;
+        # we don't parse their contents, so which app crashed is honestly
+        # reported as not determined by this system, not silently omitted.
+        java_crash_count = session.exec(
+            select(CrashEventRow).where(CrashEventRow.capture_id == capture_id)
+        ).all()
+        native_crash_count = session.exec(
+            select(NativeCrashFileRow).where(NativeCrashFileRow.capture_id == capture_id)
+        ).all()
+        bundle["device_wide_crash_evidence"] = {
+            "note": "Not filtered to a named app -- includes every crash found in this capture.",
+            "java_crashes": [
+                {"timestamp": c.timestamp, "package": c.package, "exception_class": c.exception_class,
+                 "message": c.message,
+                 "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end}}
+                for c in java_crash_count
+            ],
+            "native_crash_file_count": len(native_crash_count),
+            "native_crash_attribution": (
+                "Tombstone files are binary; this system does not parse their contents, "
+                "so which app (if any) they belong to is not determined."
+            ),
+        }
 
     user_prompt = (
         "Verified fact bundle (JSON):\n\n" + json.dumps(bundle, indent=2, default=str) +

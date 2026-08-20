@@ -16,3 +16,6 @@ build/
 # but they should not bloat the git history
 backend/tests/fixtures/*.zip
 backend/tests/fixtures/_inspect/
+
+# unrelated file that landed in this directory, not part of the project
+/ParseCat.pdf
