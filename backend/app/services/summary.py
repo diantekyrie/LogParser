@@ -117,6 +117,8 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
             {
                 "timestamp": c.timestamp, "package": c.package, "pid": c.pid,
                 "exception_class": c.exception_class, "message": c.message,
+                "root_cause_class": c.root_cause_class, "root_cause_message": c.root_cause_message,
+                "root_cause_frame": c.root_cause_frame,
                 "source": _source(c.source_section, c.source_line_start, c.source_line_end),
             } for c in crash_rows
         ],

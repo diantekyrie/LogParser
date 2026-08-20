@@ -133,6 +133,8 @@ def persist_capture(
             capture_id=capture.id,
             timestamp=c.timestamp, thread=c.thread, package=c.package, pid=c.pid,
             exception_class=c.exception_class, message=c.message,
+            root_cause_class=c.root_cause_class, root_cause_message=c.root_cause_message,
+            root_cause_frame=c.root_cause_frame,
             source_section=c.source_ref.section,
             source_line_start=c.source_ref.line_start,
             source_line_end=c.source_ref.line_end,

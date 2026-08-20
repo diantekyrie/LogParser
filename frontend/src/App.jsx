@@ -289,12 +289,21 @@ export default function App() {
                 <section className="panel">
                   <h2>Java crashes</h2>
                   <table className="fact-table">
-                    <thead><tr><th>Time</th><th>Package</th><th>Exception</th><th>Message</th><th>Cite</th></tr></thead>
+                    <thead><tr><th>Time</th><th>Package</th><th>Exception</th><th>Message</th><th>Root cause</th><th>Cite</th></tr></thead>
                     <tbody>
                       {summary.crash_events.map((cr, i) => (
                         <tr key={i}>
                           <td>{cr.timestamp}</td><td>{cr.package}</td><td>{cr.exception_class}</td>
-                          <td className="small">{cr.message}</td><td><SourceTag source={cr.source} /></td>
+                          <td className="small">{cr.message}</td>
+                          <td className="small">
+                            {cr.root_cause_class ? (
+                              <>
+                                <strong>{cr.root_cause_class}</strong>{cr.root_cause_message ? `: ${cr.root_cause_message}` : ""}
+                                {cr.root_cause_frame && <div className="muted">{cr.root_cause_frame}</div>}
+                              </>
+                            ) : <span className="muted">none</span>}
+                          </td>
+                          <td><SourceTag source={cr.source} /></td>
                         </tr>
                       ))}
                     </tbody>

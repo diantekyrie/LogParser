@@ -142,6 +142,9 @@ class CrashEventRow(SQLModel, table=True):
     pid: Optional[int]
     exception_class: Optional[str]
     message: Optional[str]
+    root_cause_class: Optional[str]
+    root_cause_message: Optional[str]
+    root_cause_frame: Optional[str]
     source_section: str
     source_line_start: int
     source_line_end: int

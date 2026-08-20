@@ -131,6 +131,13 @@ class CrashEvent:
     pid: Optional[int]
     exception_class: Optional[str]
     message: Optional[str]
+    # The DEEPEST "Caused by:" exception in the chain -- usually the actual
+    # root cause (e.g. a top-level "Unable to create application" wrapping
+    # a third-party SDK's "Caused by: RuntimeException: 25"). None if the
+    # crash had no "Caused by:" chain.
+    root_cause_class: Optional[str]
+    root_cause_message: Optional[str]
+    root_cause_frame: Optional[str]  # first stack frame under the root cause, e.g. "com.foo.Bar.baz(Bar.java:69)"
     source_ref: SourceRef
 
 

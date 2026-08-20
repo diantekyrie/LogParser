@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from app.parsers.crash_events import parse_crash_events
+from app.parsers.section_extractor import Section
 from app.services.ingestion import parse_bugreport_zip
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -94,6 +96,9 @@ def test_crash_event_matches_known_incident(capture1):
     assert crash.package == "com.android.systemui"
     assert crash.exception_class == "DeadSystemException"
     assert crash.source_ref.line_start == 58157
+    # No "Caused by:" chain in this crash -- root cause fields must stay
+    # unset rather than falsely inheriting the top-level exception.
+    assert crash.root_cause_class is None
 
 
 def test_freeze_events_present_and_reasonable(capture1):
@@ -111,6 +116,42 @@ def test_freeze_events_present_and_reasonable(capture1):
 def test_native_crash_files_from_zip_listing(capture1):
     assert len(capture1.native_crash_files) > 0
     assert all(f.filename.startswith("tombstone_") for f in capture1.native_crash_files)
+
+
+# Real lines from a third device's bugreport (not committed as a fixture --
+# it's 228MB), reproduced verbatim: a "Disneyland" app crash whose top-level
+# exception is a generic wrapper ("Unable to create application") over a
+# third-party SDK's actual root cause. This is exactly the shape a
+# root-cause chain needs unwrapping: reporting only the top-level exception
+# would blame app startup in general, not the ASSA ABLOY Mobile Keys SDK
+# call that actually threw.
+DISNEYLAND_CRASH_LINES = """\
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: FATAL EXCEPTION: main
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: Process: com.disney.wdpro.dlr, PID: 2974
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: java.lang.RuntimeException: Unable to create application com.disney.wdpro.dlr.DLRApplication
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: \tat android.app.ActivityThread.handleBindApplication(ActivityThread.java:8400)
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: \tat android.app.ActivityThread.main(ActivityThread.java:9613)
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: Caused by: java.lang.RuntimeException: 25
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: \tat com.assaabloy.mobilekeys.api.MobileKeysApi.initialize(SourceFile:69)
+08-19 21:11:56.218 10380  2974  2974 E AndroidRuntime: \tat com.disney.wdpro.eservices_ui.key.component.ResortKeyModule.provideMobileKeysApi(SourceFile:25)
+""".splitlines()
+
+
+def test_crash_parser_unwraps_caused_by_chain_to_the_real_root_cause():
+    section = Section(name="system_log", priority=None, line_start=100,
+                       line_end=100 + len(DISNEYLAND_CRASH_LINES) - 1,
+                       lines=DISNEYLAND_CRASH_LINES, kind="log")
+    crashes = parse_crash_events(section)
+    assert len(crashes) == 1
+    c = crashes[0]
+    assert c.package == "com.disney.wdpro.dlr"
+    assert c.exception_class == "java.lang.RuntimeException"
+    assert c.message == "Unable to create application com.disney.wdpro.dlr.DLRApplication"
+    # The generic wrapper isn't the real story -- the deepest "Caused by:"
+    # (the third-party SDK) is.
+    assert c.root_cause_class == "java.lang.RuntimeException"
+    assert c.root_cause_message == "25"
+    assert "MobileKeysApi.initialize" in c.root_cause_frame
 
 
 def test_second_capture_also_parses_cleanly():

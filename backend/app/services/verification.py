@@ -161,6 +161,8 @@ def verify_entity(session: Session, capture_id: int, package: str, matched_how: 
         crash_events=[
             {
                 "timestamp": c.timestamp, "exception_class": c.exception_class, "message": c.message,
+                "root_cause_class": c.root_cause_class, "root_cause_message": c.root_cause_message,
+                "root_cause_frame": c.root_cause_frame,
                 "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end},
             }
             for c in crash_rows

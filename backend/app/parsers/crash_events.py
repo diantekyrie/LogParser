@@ -1,12 +1,20 @@
 """Parser for Java `FATAL EXCEPTION` crashes in the system log.
 
-    08-13 22:39:04.221 1010247  6962  6998 E AndroidRuntime: FATAL EXCEPTION: SystemUIBg-7
-    08-13 22:39:04.221 1010247  6962  6998 E AndroidRuntime: Process: com.android.systemui, PID: 6962
-    08-13 22:39:04.221 1010247  6962  6998 E AndroidRuntime: DeadSystemException: The system died; earlier logs will point to the root cause
+    08-19 21:11:56.218 ... E AndroidRuntime: FATAL EXCEPTION: main
+    08-19 21:11:56.218 ... E AndroidRuntime: Process: com.disney.wdpro.dlr, PID: 2974
+    08-19 21:11:56.218 ... E AndroidRuntime: java.lang.RuntimeException: Unable to create application ...
+    08-19 21:11:56.218 ... E AndroidRuntime: 	at android.app.ActivityThread.handleBindApplication(...)
+    ... (more frames) ...
+    08-19 21:11:56.218 ... E AndroidRuntime: Caused by: java.lang.RuntimeException: 25
+    08-19 21:11:56.218 ... E AndroidRuntime: 	at com.assaabloy.mobilekeys.api.MobileKeysApi.initialize(...)
+    ... (more frames, possibly more "Caused by:" links) ...
 
-Three consecutive AndroidRuntime lines carry the crash header, the
-offending process, and the exception class/message. Native crashes
-(tombstones) are not text in this section at all -- see
+The top-level exception is frequently a generic wrapper ("Unable to create
+application X") -- the DEEPEST "Caused by:" in the chain is usually the
+actual root cause, so it's parsed out separately rather than left buried in
+an unparsed stack trace.
+
+Native crashes (tombstones) are not text in this section at all -- see
 ingestion.list_native_crash_files, which reads them straight from the zip's
 file listing.
 """
@@ -23,6 +31,10 @@ LOG_LINE_RE = re.compile(
 FATAL_RE = re.compile(r"^FATAL EXCEPTION: (?P<thread>.+)$")
 PROCESS_RE = re.compile(r"^Process: (?P<pkg>[\w.\-:]+), PID: (?P<pid>\d+)$")
 EXCEPTION_RE = re.compile(r"^([\w.$]*Exception[\w.$]*|Error): ?(.*)$")
+CAUSED_BY_RE = re.compile(r"^Caused by: ([\w.$]*Exception[\w.$]*|Error): ?(.*)$")
+FRAME_RE = re.compile(r"^\s*at (.+)$")
+
+MAX_BLOCK_LINES = 500  # generous cap on one crash's stack trace + all "Caused by:" links
 
 
 def parse_crash_events(section: Section) -> list[CrashEvent]:
@@ -40,35 +52,60 @@ def parse_crash_events(section: Section) -> list[CrashEvent]:
         start_line = section.line_start + i
 
         package = pid = exception_class = message = None
+        root_cause_class = root_cause_message = root_cause_frame = None
         end_line = start_line
+        found_top_exception = False
+        awaiting_root_frame = False
 
-        # The next couple of AndroidRuntime lines (same timestamp block)
-        # carry Process:/exception details.
         j = i + 1
-        lookahead_limit = min(n, i + 6)
-        while j < lookahead_limit:
+        limit = min(n, i + MAX_BLOCK_LINES)
+        while j < limit:
             m2 = LOG_LINE_RE.match(section.lines[j])
             if not m2:
-                break
+                break  # crash block ends where consecutive AndroidRuntime lines end
             rest = m2.group("rest")
+            end_line = section.line_start + j
+
             pm = PROCESS_RE.match(rest)
             if pm:
                 package = pm.group("pkg")
                 pid = int(pm.group("pid"))
-                end_line = section.line_start + j
                 j += 1
                 continue
-            em = EXCEPTION_RE.match(rest)
-            if em and exception_class is None:
-                exception_class = em.group(1)
-                message = em.group(2)
-                end_line = section.line_start + j
-                break
+
+            cb = CAUSED_BY_RE.match(rest)
+            if cb:
+                # Each "Caused by:" replaces the previous one -- we keep the
+                # DEEPEST (last) link in the chain as the root cause.
+                root_cause_class, root_cause_message = cb.group(1), cb.group(2)
+                root_cause_frame = None
+                awaiting_root_frame = True
+                j += 1
+                continue
+
+            if awaiting_root_frame:
+                fm = FRAME_RE.match(rest)
+                if fm:
+                    root_cause_frame = fm.group(1)
+                awaiting_root_frame = False
+                j += 1
+                continue
+
+            if not found_top_exception:
+                em = EXCEPTION_RE.match(rest)
+                if em:
+                    exception_class, message = em.group(1), em.group(2)
+                    found_top_exception = True
+                    j += 1
+                    continue
+
             j += 1
 
         out.append(CrashEvent(
             timestamp=ts, thread=thread, package=package, pid=pid,
             exception_class=exception_class, message=message,
+            root_cause_class=root_cause_class, root_cause_message=root_cause_message,
+            root_cause_frame=root_cause_frame,
             source_ref=SourceRef("system_log", start_line, end_line),
         ))
         i += 1

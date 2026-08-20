@@ -143,7 +143,8 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
             "note": "Not filtered to a named app -- includes every crash found in this capture.",
             "java_crashes": [
                 {"timestamp": c.timestamp, "package": c.package, "exception_class": c.exception_class,
-                 "message": c.message,
+                 "message": c.message, "root_cause_class": c.root_cause_class,
+                 "root_cause_message": c.root_cause_message, "root_cause_frame": c.root_cause_frame,
                  "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end}}
                 for c in java_crash_count
             ],
