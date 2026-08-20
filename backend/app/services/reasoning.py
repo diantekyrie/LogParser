@@ -118,6 +118,15 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
     )
 
     llm = get_llm_client()
-    report_text = llm.narrate(SYSTEM_PROMPT, user_prompt)
+    try:
+        report_text = llm.narrate(SYSTEM_PROMPT, user_prompt)
+        llm_error = None
+    except Exception as exc:  # noqa: BLE001 -- LLM narration is a convenience
+        # layer on top of already-computed, independently verified facts.
+        # A provider outage, quota error, or bad key should degrade to
+        # "here are the facts, narration failed" -- never a 500 that hides
+        # the verification work that already succeeded.
+        report_text = None
+        llm_error = str(exc)
 
-    return {"bundle": bundle, "report": report_text}
+    return {"bundle": bundle, "report": report_text, "llm_error": llm_error}

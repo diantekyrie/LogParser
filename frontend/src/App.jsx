@@ -194,7 +194,13 @@ export default function App() {
           ))}
 
           <h2>Report</h2>
-          <pre className="report">{diagnosis.report}</pre>
+          {diagnosis.report ? (
+            <pre className="report">{diagnosis.report}</pre>
+          ) : (
+            <div className="error">
+              LLM narration failed (verified facts above are unaffected): {diagnosis.llm_error}
+            </div>
+          )}
         </section>
       )}
 
