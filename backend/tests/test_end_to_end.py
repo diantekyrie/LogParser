@@ -179,3 +179,32 @@ def test_bt_hci_summary_persisted_and_queryable(session):
     # A real anomaly this parser found in the fixture: a Command Complete
     # with a non-Success status should show up among notable events.
     assert any(e["status_name"] != "Success" for e in bt["notable_events"])
+
+
+def test_two_word_brand_names_concatenated_in_package_ids_are_found(session):
+    # Regression: "Disney Plus" and "Proton VPN" both matched ZERO
+    # installed packages even though com.disney.disneyplus and
+    # ch.protonvpn.android are both installed on this capture -- the
+    # exact-segment-equality rule (added to stop "and" false-matching
+    # inside "android") required a single question word to equal an
+    # entire package segment, but these brand names collapse two words
+    # into one segment with no separator ("disneyplus", "protonvpn").
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(
+        session, capture.id, "frankel-pixel",
+        "The phone was draining battery fast and I'm wondering if it was from "
+        "watching Disney Plus while connected to VPN using Proton VPN.",
+    )
+    claims = {c["package"]: c for c in result["bundle"]["claims"]}
+    assert "com.disney.disneyplus" in claims
+    assert "ch.protonvpn.android" in claims
+    # Both entities turn out to have real, independently-verified state --
+    # Disney+ was actively PLAYING, and Proton VPN shows freeze/unfreeze
+    # cycling -- genuinely relevant corroborating context. Neither is a
+    # battery-drain measurement (there's no battery-stats parser), so
+    # confidence is MEDIUM (backed by real facts) rather than fabricated
+    # HIGH or a battery-specific causal claim.
+    assert claims["com.disney.disneyplus"]["verified_state"]["media_session_playback_state"] == "PLAYING"
+    assert claims["ch.protonvpn.android"]["verified_state"]["freeze_count"] > 0
+    for c in claims.values():
+        assert c["confidence"] in {"LOW", "MEDIUM"}  # never HIGH from single-capture, non-cross-checked facts

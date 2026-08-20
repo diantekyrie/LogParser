@@ -84,14 +84,29 @@ def extract_candidate_packages(question: str, known_packages: list[str]) -> list
     # words -- substring matching let three-letter words like "and" falsely
     # match inside "android", which is exactly the kind of unverified
     # inference this pass exists to avoid.
-    words = {
+    ordered_words = [
         w.lower() for w in re.findall(r"[A-Za-z]+", question)
         if len(w) > 2 and w.lower() not in STOPWORDS
+    ]
+    words = set(ordered_words)
+
+    # Two-word brand names often collapse into a single package segment with
+    # no separator ("Disney Plus" -> "disneyplus", "Proton VPN" ->
+    # "protonvpn") -- a real gap found live: "Disney Plus" and "Proton VPN"
+    # both matched zero installed packages even though both were installed,
+    # because neither word alone reaches the >=2-distinct-segment-hits bar
+    # below. Adjacent question words get concatenated and checked against
+    # segments too; a single such match is trusted on its own (concatenating
+    # two specific words and landing on an exact real segment is not the
+    # kind of coincidence three-letter substring matching produced).
+    adjacent_concat = {
+        ordered_words[i] + ordered_words[i + 1] for i in range(len(ordered_words) - 1)
     }
+
     for pkg in known_packages:
         segments = {s for s in pkg.lower().split(".") if s not in GENERIC_SEGMENTS}
         hits = words & segments
-        if len(hits) >= 2:
+        if len(hits) >= 2 or (adjacent_concat & segments):
             found.add(pkg)
 
     return sorted(found)
