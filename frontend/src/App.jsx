@@ -457,7 +457,7 @@ export default function App() {
               <input
                 key={fileInputKey}
                 type="file"
-                accept=".zip,.txt,.pcap,.btt"
+                accept=".zip,.txt,.pcap,.pcapng,.btt"
                 multiple
                 onChange={(e) => setSelectedFiles(Array.from(e.target.files || []))}
               />

@@ -24,6 +24,41 @@ def _classic_pcap() -> bytes:
     return header + pkt1 + pkt2
 
 
+def _block(endian: str, block_type: int, body: bytes) -> bytes:
+    total_len = 12 + len(body)
+    return struct.pack(endian + "II", block_type, total_len) + body + struct.pack(endian + "I", total_len)
+
+
+def _pcapng() -> bytes:
+    endian = "<"
+    section = _block(
+        endian,
+        0x0A0D0D0A,
+        b"\x4d\x3c\x2b\x1a" + struct.pack(endian + "HHq", 1, 0, -1),
+    )
+    interface = _block(
+        endian,
+        0x00000001,
+        struct.pack(endian + "HHI", 1, 0, 65535),
+    )
+    packet_data = b"abcd"
+    timestamp = 1_800_000_000_000_000
+    packet = _block(
+        endian,
+        0x00000006,
+        struct.pack(
+            endian + "IIIII",
+            0,
+            timestamp >> 32,
+            timestamp & 0xFFFFFFFF,
+            len(packet_data),
+            len(packet_data),
+        )
+        + packet_data,
+    )
+    return section + interface + packet
+
+
 def test_parse_classic_pcap_summary():
     summary = parse_pcap(_classic_pcap())
 
@@ -36,6 +71,19 @@ def test_parse_classic_pcap_summary():
     assert summary.malformed_packets == 0
     assert summary.first_timestamp is not None
     assert summary.last_timestamp is not None
+
+
+def test_parse_pcapng_summary():
+    summary = parse_pcap(_pcapng())
+
+    assert summary.format == "pcapng"
+    assert summary.linktype_name == "Ethernet"
+    assert summary.total_packets == 1
+    assert summary.captured_bytes == 4
+    assert summary.original_bytes == 4
+    assert summary.truncated_packets == 0
+    assert summary.malformed_packets == 0
+    assert summary.first_timestamp is not None
 
 
 def test_investigation_groups_multiple_captures():

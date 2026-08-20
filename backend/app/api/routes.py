@@ -17,7 +17,7 @@ from app.services.summary import build_capture_summary
 
 router = APIRouter()
 
-SUPPORTED_UPLOAD_SUFFIXES = {".zip", ".txt", ".pcap", ".btt"}
+SUPPORTED_UPLOAD_SUFFIXES = {".zip", ".txt", ".pcap", ".pcapng", ".btt"}
 
 
 @router.post("/captures")
@@ -29,7 +29,7 @@ async def upload_capture(
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
-        raise HTTPException(400, "Expected one of: .zip, .txt, .pcap, .btt")
+        raise HTTPException(400, "Expected one of: .zip, .txt, .pcap, .pcapng, .btt")
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)

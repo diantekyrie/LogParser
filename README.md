@@ -116,7 +116,7 @@ The local dashboard accepts four upload types:
 |---|---|
 | `.zip` | Full Android bugreport ZIP ingestion, including flattened bugreport text plus ZIP-contained tombstones, ANRs, and Bluetooth HCI log files. |
 | `.txt` | Direct flattened Android bugreport text ingestion. ZIP-only companion files are not available, so tombstones/ANRs/HCI files are reported as unavailable. |
-| `.pcap` | Classic libpcap container parsing: packet count, byte totals, time range, link type, truncated packet count, and malformed record count. Protocol-level packet decoding is not implemented yet. |
+| `.pcap`, `.pcapng` | Classic libpcap and pcapng container parsing: packet count, byte totals, time range, link type, truncated packet count, and malformed record count. Protocol-level packet decoding is not implemented yet. |
 | `.btt` | Accepted as an Ellisys artifact. If the bytes are actually `btsnoop`/HCI, they are parsed by the existing Bluetooth HCI parser; otherwise the upload is kept as a capture with an explicit warning that native Ellisys `.btt` decoding needs a sample/spec or an Ellisys export to btsnoop/pcap. |
 
 Uploads can also be grouped into a named bug folder/investigation so one

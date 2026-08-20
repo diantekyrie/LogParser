@@ -185,8 +185,8 @@ def parse_capture_file(path: str | Path, filename: str | None = None) -> ParsedC
         return parse_bugreport_zip(path)
     if suffix == ".txt":
         return parse_bugreport_txt(path)
-    if suffix == ".pcap":
+    if suffix in {".pcap", ".pcapng"}:
         return parse_pcap_file(path)
     if suffix == ".btt":
         return parse_btt_file(path)
-    raise ValueError("Unsupported upload type; expected .zip, .txt, .pcap, or .btt")
+    raise ValueError("Unsupported upload type; expected .zip, .txt, .pcap, .pcapng, or .btt")
