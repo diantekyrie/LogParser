@@ -172,12 +172,13 @@ function TriageControls({
   );
 }
 
-function ClaimCard({ claim }) {
+function ClaimCard({ claim, deviceLabel }) {
   const s = claim.verified_state;
   return (
     <div className="claim-card">
       <div className="claim-header">
         <strong>{claim.package}</strong>
+        {deviceLabel && <span className="badge device-badge">{deviceLabel}</span>}
         <span className="badge" style={{ background: CONFIDENCE_COLOR[claim.confidence] }}>{claim.confidence}</span>
         <span className="muted small">({claim.matched_how})</span>
       </div>
@@ -226,6 +227,9 @@ export default function App() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [providers, setProviders] = useState([]);
   const [provider, setProvider] = useState("");
+  const [invQuestion, setInvQuestion] = useState("");
+  const [invDiagnosis, setInvDiagnosis] = useState(null);
+  const [invDiagnosing, setInvDiagnosing] = useState(false);
   const [appFilter, setAppFilter] = useState("");
   const [timelineFilter, setTimelineFilter] = useState("");
   const [incidentTime, setIncidentTime] = useState("");
@@ -364,6 +368,48 @@ export default function App() {
     }
   }
 
+  async function handleDiagnoseInvestigation(e) {
+    e.preventDefault();
+    if (!investigationLabel.trim() || !invQuestion) return;
+    setInvDiagnosing(true);
+    setError(null);
+    setInvDiagnosis(null);
+    try {
+      const form = new FormData();
+      form.append("question", invQuestion);
+      if (provider) form.append("provider", provider);
+      const data = await api(
+        `/investigations/${encodeURIComponent(investigationLabel.trim())}/diagnose`,
+        { method: "POST", body: form },
+      );
+      setInvDiagnosis(data);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setInvDiagnosing(false);
+    }
+  }
+
+  function exportInvestigationDiagnosis() {
+    if (!invDiagnosis) return;
+    const report = [
+      "groundtruth investigation diagnosis export",
+      `investigation: ${investigationLabel}`,
+      `captures: ${invDiagnosis.bundle.captures.map((c) => `#${c.capture_id} (${c.device_label})`).join(", ")}`,
+      `provider: ${invDiagnosis.provider || "auto"}`,
+      "",
+      "question:",
+      invDiagnosis.bundle.question,
+      "",
+      "report:",
+      invDiagnosis.report || `LLM narration failed: ${invDiagnosis.llm_error}`,
+      "",
+      "verified fact bundle (all captures):",
+      JSON.stringify(invDiagnosis.bundle, null, 2),
+    ].join("\n");
+    downloadText(`groundtruth-investigation-${investigationLabel}-diagnosis.txt`, report);
+  }
+
   const c = summary?.counts;
   const filtered = useMemo(() => {
     if (!summary) return null;
@@ -445,6 +491,7 @@ export default function App() {
                 value={investigationLabel}
                 onChange={(e) => {
                   setInvestigationLabel(e.target.value);
+                  setInvDiagnosis(null);
                   loadInvestigationCaptures(e.target.value);
                 }}
               />
@@ -493,6 +540,73 @@ export default function App() {
           {error && <div className="error">{error}</div>}
 
           {!summary && <div className="panel"><p className="muted">Upload a bugreport or pick a capture to see parsed facts.</p></div>}
+
+          {investigationLabel.trim() && (
+            <section className="panel investigation-panel">
+              <h2>Ask across investigation &ldquo;{investigationLabel.trim()}&rdquo;</h2>
+              <p className="muted small">
+                {captures.length > 0
+                  ? `${captures.length} capture(s) linked: ${captures.map((cap) => cap.original_filename).join(", ")}`
+                  : "No captures linked to this bug folder yet."}
+                {" "}Facts from every linked capture are merged and each fact is tagged with the device/file it came from
+                — this is how you correlate two physical devices in the same investigation (e.g. a phone and a watch
+                that were pairing with each other).
+              </p>
+              <form onSubmit={handleDiagnoseInvestigation}>
+                <textarea
+                  rows={3}
+                  placeholder="e.g. A network error was seen on one of these 2 devices while attempting to pair"
+                  value={invQuestion}
+                  onChange={(e) => setInvQuestion(e.target.value)}
+                />
+                <div className="ask-row">
+                  <label className="inline-label">
+                    Narrated by
+                    <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id} disabled={!p.available}>
+                          {p.label}{!p.available ? " (no key set)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="submit" disabled={invDiagnosing || !invQuestion || captures.length < 2}>
+                    {invDiagnosing ? "Diagnosing…" : "Diagnose across investigation"}
+                  </button>
+                </div>
+                {captures.length < 2 && (
+                  <p className="muted small">Link at least 2 captures to this bug folder to diagnose across them.</p>
+                )}
+              </form>
+
+              {invDiagnosis && (
+                <div className="investigation-result">
+                  {invDiagnosis.bundle.captures.map((cap) => (
+                    <div key={cap.capture_id}>
+                      {cap.claims.map((cl) => (
+                        <ClaimCard key={`${cap.capture_id}-${cl.package}`} claim={cl} deviceLabel={cap.device_label} />
+                      ))}
+                    </div>
+                  ))}
+                  {invDiagnosis.bundle.captures.every((cap) => cap.claims.length === 0) && (
+                    <p className="muted">No app named in the question matched a known package in any linked capture — nothing to verify.</p>
+                  )}
+                  <h3>
+                    Report
+                    {invDiagnosis.provider && (
+                      <span className="muted small"> - narrated by {providers.find((p) => p.id === invDiagnosis.provider)?.label || invDiagnosis.provider}</span>
+                    )}
+                  </h3>
+                  <button type="button" className="secondary-btn" onClick={exportInvestigationDiagnosis}>Export diagnosis</button>
+                  {invDiagnosis.report ? (
+                    <pre className="report">{invDiagnosis.report}</pre>
+                  ) : (
+                    <div className="error">LLM narration failed (facts above are unaffected): {invDiagnosis.llm_error}</div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           {summary && (
             <>
@@ -860,6 +974,9 @@ export default function App() {
         .claim-card { border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: #0e1420; }
         .claim-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
         .badge { color: #10131a; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 10px; }
+        .device-badge { background: var(--blue); color: #061019; }
+        .investigation-panel { border-color: var(--accent); }
+        .investigation-result { margin-top: 14px; }
         .history { margin-top: 8px; font-size: 12px; background: #10151f; padding: 8px; border-radius: 6px; color: var(--muted); }
         .report { white-space: pre-wrap; background: #0e1420; padding: 12px; border-radius: 6px; font-size: 13px; max-height: 420px; overflow: auto; border: 1px solid var(--panel-border); }
         @media (max-width: 900px) {
