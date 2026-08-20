@@ -17,6 +17,6 @@ from app.llm.interface import LLMClient
 class StubLLMClient(LLMClient):
     def narrate(self, system_prompt: str, user_prompt: str) -> str:
         return (
-            "[stub LLM -- no ANTHROPIC_API_KEY configured, echoing the assembled facts "
+            "[stub LLM -- no narration model in use, echoing the assembled facts "
             "verbatim instead of narrating them]\n\n" + user_prompt
         )

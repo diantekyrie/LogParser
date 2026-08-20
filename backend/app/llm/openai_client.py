@@ -2,6 +2,13 @@
 ANTHROPIC_API_KEY takes precedence -- see app/llm/__init__.py). Same
 contract as AnthropicClient: narrates an already-verified fact bundle, adds
 no facts of its own.
+
+Two OpenAI API generations are in play here, and they are NOT
+interchangeable: regular chat models (gpt-4.1, etc.) use the
+`chat.completions` endpoint, but Codex-family models (gpt-5.x-codex) 404 on
+that endpoint with "Use the v1/responses endpoint instead" -- confirmed live
+against the real API, not assumed. `narrate()` picks the endpoint by
+whether "codex" appears in the model name.
 """
 from __future__ import annotations
 
@@ -20,9 +27,24 @@ class OpenAIClient(LLMClient):
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set")
         self._client = openai.OpenAI(api_key=api_key)
-        self._model = os.environ.get("OPENAI_MODEL", model)
+        # Respect exactly the model the caller passed -- no env override
+        # here. Callers (see app/llm/__init__.py) are responsible for
+        # resolving env-based overrides for their own provider id before
+        # constructing this client; overriding here too would let a single
+        # OPENAI_MODEL env var silently clobber the "openai" and
+        # "openai-codex" providers into the same model, defeating having
+        # two distinct dropdown options.
+        self._model = model
 
     def narrate(self, system_prompt: str, user_prompt: str) -> str:
+        if "codex" in self._model.lower():
+            response = self._client.responses.create(
+                model=self._model,
+                instructions=system_prompt,
+                input=user_prompt,
+            )
+            return response.output_text or ""
+
         response = self._client.chat.completions.create(
             model=self._model,
             max_tokens=2048,

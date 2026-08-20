@@ -50,7 +50,10 @@ numbers). Rules, no exceptions:
    app -- use it to answer general crash questions, but never claim it
    proves a specific app crashed unless a claim's own crash_events says so.
    Native crash file counts are unattributed; say that plainly rather than
-   guessing which app they belong to.
+   guessing which app they belong to. Each entry there carries its own
+   "confidence" field, computed the same way as claim confidence -- use it
+   verbatim, same as rule 2. Never assign a confidence level to anything
+   in this bundle that isn't already labeled with one.
 """
 
 
@@ -111,7 +114,10 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
     return claim
 
 
-def diagnose(session: Session, capture_id: int, device_label: str, question: str) -> dict:
+def diagnose(
+    session: Session, capture_id: int, device_label: str, question: str,
+    provider: str | None = None,
+) -> dict:
     entities = verify_question_entities(session, capture_id, question)
     want_history = bool(MULTI_CAPTURE_TRIGGER_RE.search(question))
 
@@ -139,12 +145,22 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
         native_crash_count = session.exec(
             select(NativeCrashFileRow).where(NativeCrashFileRow.capture_id == capture_id)
         ).all()
+        # Each crash line is exactly one structured fact, checked against
+        # exactly this one capture -- computed the same way entity claims
+        # are, rather than leaving confidence for the LLM to infer (an
+        # earlier version left this field out entirely and relied on the
+        # system prompt telling the model not to invent one; that worked
+        # for one provider but not another live-tested one, which assigned
+        # "HIGH confidence" to evidence that had none. Computing it removes
+        # the ambiguity instead of hoping every model infers it the same way).
+        crash_confidence, crash_corroboration = score_confidence(1, 1)
         bundle["device_wide_crash_evidence"] = {
             "note": "Not filtered to a named app -- includes every crash found in this capture.",
             "java_crashes": [
                 {"timestamp": c.timestamp, "package": c.package, "exception_class": c.exception_class,
                  "message": c.message, "root_cause_class": c.root_cause_class,
                  "root_cause_message": c.root_cause_message, "root_cause_frame": c.root_cause_frame,
+                 "confidence": crash_confidence, "corroboration": crash_corroboration,
                  "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end}}
                 for c in java_crash_count
             ],
@@ -161,7 +177,7 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
     )
 
     try:
-        llm = get_llm_client()
+        llm = get_llm_client(provider)
         report_text = llm.narrate(SYSTEM_PROMPT, user_prompt)
         llm_error = None
     except Exception as exc:  # noqa: BLE001 -- LLM narration is a convenience
@@ -172,4 +188,4 @@ def diagnose(session: Session, capture_id: int, device_label: str, question: str
         report_text = None
         llm_error = str(exc)
 
-    return {"bundle": bundle, "report": report_text, "llm_error": llm_error}
+    return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}

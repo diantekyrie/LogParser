@@ -117,12 +117,22 @@ export default function App() {
   const [question, setQuestion] = useState("");
   const [diagnosis, setDiagnosis] = useState(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [providers, setProviders] = useState([]);
+  const [provider, setProvider] = useState("");
 
   const refreshDevices = useCallback(() => {
     api("/devices").then(setDevices).catch(() => {});
   }, []);
 
   useEffect(() => { refreshDevices(); }, [refreshDevices]);
+
+  useEffect(() => {
+    api("/llm/providers").then((ps) => {
+      setProviders(ps);
+      const firstAvailable = ps.find((p) => p.available);
+      if (firstAvailable) setProvider(firstAvailable.id);
+    }).catch(() => {});
+  }, []);
 
   // Every keystroke in the device-label field can fire a lookup; requests
   // don't resolve in the order they were sent (a stale, still-typing label
@@ -196,6 +206,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("question", question);
+      if (provider) form.append("provider", provider);
       const data = await api(`/captures/${selectedCaptureId}/diagnose`, { method: "POST", body: form });
       setDiagnosis(data);
     } catch (err) {
@@ -358,9 +369,21 @@ export default function App() {
                     value={question}
                     onChange={(e) => setQuestion(e.target.value)}
                   />
-                  <button type="submit" disabled={diagnosing || !question}>
-                    {diagnosing ? "Diagnosing…" : "Diagnose across this device"}
-                  </button>
+                  <div className="ask-row">
+                    <label className="inline-label">
+                      Narrated by
+                      <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                        {providers.map((p) => (
+                          <option key={p.id} value={p.id} disabled={!p.available}>
+                            {p.label}{!p.available ? " (no key set)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="submit" disabled={diagnosing || !question}>
+                      {diagnosing ? "Diagnosing…" : "Diagnose across this device"}
+                    </button>
+                  </div>
                 </form>
               </section>
 
@@ -371,7 +394,7 @@ export default function App() {
                     <p className="muted">No app named in the question matched a known package — nothing to verify.</p>
                   )}
                   {diagnosis.bundle.claims.map((cl) => <ClaimCard key={cl.package} claim={cl} />)}
-                  <h3>Report</h3>
+                  <h3>Report {diagnosis.provider && <span className="muted small">— narrated by {providers.find((p) => p.id === diagnosis.provider)?.label || diagnosis.provider}</span>}</h3>
                   {diagnosis.report ? (
                     <pre className="report">{diagnosis.report}</pre>
                   ) : (
@@ -408,6 +431,13 @@ export default function App() {
           background: #0e1420; color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px;
         }
         textarea { resize: vertical; }
+        select {
+          padding: 8px 10px; font: inherit; font-size: 13px; background: #0e1420; color: var(--text);
+          border: 1px solid var(--panel-border); border-radius: 6px; margin-top: 4px;
+        }
+        .ask-row { display: flex; align-items: flex-end; gap: 16px; margin-top: 4px; }
+        .inline-label { margin-bottom: 0; flex: 0 0 auto; }
+        .inline-label select { display: block; }
         button {
           padding: 9px 18px; border-radius: 6px; border: none; background: var(--accent); color: #1a0e05;
           cursor: pointer; font-weight: 700; font-size: 13px;

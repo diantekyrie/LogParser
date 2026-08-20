@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session, select
 
 from app.db import get_session
+from app.llm import list_providers
 from app.models.db_models import Capture, Device
 from app.services.ingestion import parse_bugreport_zip
 from app.services.persistence import persist_capture
@@ -53,6 +54,11 @@ async def upload_capture(
     }
 
 
+@router.get("/llm/providers")
+def get_llm_providers():
+    return list_providers()
+
+
 @router.get("/devices")
 def list_devices(session: Session = Depends(get_session)):
     devices = session.exec(select(Device)).all()
@@ -80,6 +86,7 @@ def capture_summary(capture_id: int, session: Session = Depends(get_session)):
 def diagnose_capture(
     capture_id: int,
     question: str = Form(...),
+    provider: str | None = Form(None),
     session: Session = Depends(get_session),
 ):
     capture = session.get(Capture, capture_id)
@@ -87,5 +94,5 @@ def diagnose_capture(
         raise HTTPException(404, "Unknown capture")
     device = session.get(Device, capture.device_id)
 
-    result = diagnose(session, capture_id, device.label, question)
+    result = diagnose(session, capture_id, device.label, question, provider=provider)
     return result

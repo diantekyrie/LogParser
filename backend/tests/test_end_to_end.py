@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.llm import get_llm_client, list_providers
 from app.services.correlation import package_history_across_device
 from app.services.ingestion import parse_bugreport_zip
 from app.services.persistence import persist_capture
@@ -129,3 +130,22 @@ def test_named_app_crash_data_included_in_its_own_claim(session):
     claim = next(c for c in result["bundle"]["claims"] if c["package"] == "com.android.systemui")
     assert len(claim["verified_state"]["crash_events"]) == 1
     assert claim["verified_state"]["crash_events"][0]["exception_class"] == "DeadSystemException"
+
+
+def test_explicit_provider_selection_is_honored_and_reported_back(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Was there a crash?", provider="stub")
+    assert result["provider"] == "stub"
+    assert "[stub LLM" in result["report"]
+
+
+def test_list_providers_reports_availability_from_env():
+    ids = {p["id"] for p in list_providers()}
+    assert ids == {"anthropic", "openai", "openai-codex", "stub"}
+    stub = next(p for p in list_providers() if p["id"] == "stub")
+    assert stub["available"] is True  # never requires a key
+
+
+def test_unknown_provider_raises_rather_than_silently_falling_back():
+    with pytest.raises(ValueError):
+        get_llm_client("not-a-real-provider")
