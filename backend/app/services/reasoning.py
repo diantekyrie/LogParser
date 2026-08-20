@@ -17,7 +17,17 @@ from sqlmodel import Session
 from sqlmodel import select
 
 from app.llm import get_llm_client
-from app.models.db_models import AnrRow, BatteryUidStatRow, CrashEventRow, TombstoneRow, WifiEventRow
+from app.models.db_models import (
+    AnrRow,
+    BatteryUidStatRow,
+    BtHciEventRow,
+    BtHciSummaryRow,
+    CdmPairingEventRow,
+    CrashEventRow,
+    PacketCaptureSummaryRow,
+    TombstoneRow,
+    WifiEventRow,
+)
 from app.services.correlation import PackageHistory, package_history_across_device
 from app.services.verification import EntityVerification, verify_question_entities
 
@@ -29,6 +39,10 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
 CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
 WIFI_TRIGGER_RE = re.compile(r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam)\w*\b", re.IGNORECASE)
 BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.IGNORECASE)
+PAIRING_TRIGGER_RE = re.compile(
+    r"\b(pair(?:ed|ing)?|bond(?:ed|ing)?|bluetooth|\bbt\b|companion|network|connect(?:ed|ion)?)\b",
+    re.IGNORECASE,
+)
 
 SYSTEM_PROMPT = """You are a diagnosis-report writer for Android device logs.
 
@@ -70,6 +84,16 @@ numbers). Rules, no exceptions:
    link to any specific user-reported symptom -- report the numbers
    plainly and let them speak for themselves rather than asserting they
    "caused" drain unless the bundle itself frames it that way.
+9. If the bundle includes "device_wide_pairing_evidence", those are real
+   Companion Device Manager / Fast Pair events for the capture's device
+   pairing flow. A "kind":"anomaly" entry means only that the log level
+   (W/E) flagged it, not that its `detail` text has been independently
+   interpreted -- quote the detail rather than paraphrasing a cause into
+   it. If the bundle also includes "bt_hci_summary" or
+   "packet_capture_summary", those are supporting evidence (HCI event
+   counts, or raw packet-capture metadata) -- packet_capture_summary in
+   particular cannot identify what a network error was, only that a
+   capture exists; say so if asked to characterize the error itself.
 """
 
 
@@ -133,10 +157,12 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
     return claim
 
 
-def diagnose(
-    session: Session, capture_id: int, device_label: str, question: str,
-    provider: str | None = None,
-) -> dict:
+def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str, question: str) -> dict:
+    """Everything diagnose() needs except the actual LLM call -- pulled out
+    so investigation-level diagnosis (see diagnose_investigation()) can
+    build one bundle per capture and merge them before a single LLM call,
+    without duplicating the per-capture fact-gathering logic.
+    """
     entities = verify_question_entities(session, capture_id, question)
     want_history = bool(MULTI_CAPTURE_TRIGGER_RE.search(question))
 
@@ -258,21 +284,142 @@ def diagnose(
             ],
         }
 
+    if PAIRING_TRIGGER_RE.search(question):
+        # Real gap found live: a "network error while pairing" question
+        # between two devices came back "unknown" from two different LLM
+        # providers, even though the actual pairing session -- Fast Pair
+        # discovery, Companion Device Manager association, secure-channel
+        # handshake -- was sitting in the system log the whole time, along
+        # with a concrete, repeated failure
+        # ("Action REQUEST_TRANSPORT FAILED to activate") that a generic
+        # W/E-level catch-all found even though it wasn't hand-anticipated.
+        # Also include the raw Bluetooth HCI and packet-capture summaries
+        # here (previously computed and shown on the dashboard but never
+        # actually reached the LLM bundle at all) since a pairing/network
+        # question is exactly when they're relevant.
+        pairing_confidence, pairing_corroboration = score_confidence(1, 1)
+        pairing_events = session.exec(
+            select(CdmPairingEventRow).where(CdmPairingEventRow.capture_id == capture_id)
+        ).all()
+        bundle["device_wide_pairing_evidence"] = {
+            "note": (
+                "Companion Device Manager / Fast Pair events for this capture, not filtered to a "
+                "named app. kind=\"anomaly\" entries are any W/E-level CDM_* log line whose specific "
+                "message wasn't individually decoded -- the log level flags it as worth attention, "
+                "the raw text is in `detail`."
+            ),
+            "events": [
+                {"timestamp": e.timestamp, "level": e.level, "tag": e.tag, "kind": e.kind,
+                 "mac_address": e.mac_address, "display_name": e.display_name,
+                 "package_name": e.package_name, "association_id": e.association_id,
+                 "detail": e.detail, "confidence": pairing_confidence, "corroboration": pairing_corroboration,
+                 "source": {"section": e.source_section, "line_start": e.source_line_start, "line_end": e.source_line_end}}
+                for e in pairing_events
+            ],
+        }
+        bt_row = session.exec(
+            select(BtHciSummaryRow).where(BtHciSummaryRow.capture_id == capture_id)
+        ).first()
+        if bt_row:
+            bt_events = session.exec(
+                select(BtHciEventRow).where(BtHciEventRow.capture_id == capture_id)
+            ).all()
+            bundle["bt_hci_summary"] = {
+                "total_packets": bt_row.total_packets, "command_count": bt_row.command_count,
+                "event_count": bt_row.event_count, "first_timestamp": bt_row.first_timestamp,
+                "last_timestamp": bt_row.last_timestamp,
+                "notable_events": [
+                    {"timestamp": e.timestamp, "kind": e.kind, "status_name": e.status_name,
+                     "reason_name": e.reason_name, "handle": e.handle}
+                    for e in bt_events if e.kind == "disconnection_complete" or (e.status_code or 0) != 0
+                ],
+            }
+        pcap_row = session.exec(
+            select(PacketCaptureSummaryRow).where(PacketCaptureSummaryRow.capture_id == capture_id)
+        ).first()
+        if pcap_row:
+            bundle["packet_capture_summary"] = {
+                "format": pcap_row.format, "linktype_name": pcap_row.linktype_name,
+                "total_packets": pcap_row.total_packets, "first_timestamp": pcap_row.first_timestamp,
+                "last_timestamp": pcap_row.last_timestamp,
+                "note": (
+                    "Packet-count/byte/time-range metadata only -- no protocol-level decoding of "
+                    "packet contents is implemented, so this cannot by itself identify what a "
+                    "network error was, only that a capture exists covering this time range."
+                ),
+            }
+
+    return bundle
+
+
+def _run_llm(bundle: dict, system_prompt: str, provider: str | None) -> tuple[str | None, str | None]:
     user_prompt = (
         "Verified fact bundle (JSON):\n\n" + json.dumps(bundle, indent=2, default=str) +
         "\n\nWrite a diagnosis report answering the question above using only these facts."
     )
-
     try:
         llm = get_llm_client(provider)
-        report_text = llm.narrate(SYSTEM_PROMPT, user_prompt)
-        llm_error = None
+        return llm.narrate(system_prompt, user_prompt), None
     except Exception as exc:  # noqa: BLE001 -- LLM narration is a convenience
         # layer on top of already-computed, independently verified facts.
         # A provider outage, quota error, or bad key should degrade to
         # "here are the facts, narration failed" -- never a 500 that hides
         # the verification work that already succeeded.
-        report_text = None
-        llm_error = str(exc)
+        return None, str(exc)
 
+
+def diagnose(
+    session: Session, capture_id: int, device_label: str, question: str,
+    provider: str | None = None,
+) -> dict:
+    bundle = build_diagnosis_bundle(session, capture_id, device_label, question)
+    report_text, llm_error = _run_llm(bundle, SYSTEM_PROMPT, provider)
+    return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}
+
+
+INVESTIGATION_SYSTEM_PROMPT = SYSTEM_PROMPT + """
+10. This bundle covers MULTIPLE captures, possibly from different physical
+    devices, grouped under one investigation. The top-level "captures" array
+    has one entry per capture, each tagged with "capture_id",
+    "original_filename", and "device_label" -- always say which capture/
+    device a fact came from, never merge facts from different captures into
+    one unlabeled claim. When the question is about something happening
+    "between" or "on one of" multiple devices, look across all entries and
+    say which capture(s) actually show relevant evidence, rather than only
+    reporting on the first one.
+"""
+
+
+def diagnose_investigation(
+    session: Session, investigation_id: int, question: str, provider: str | None = None,
+) -> dict:
+    """Runs diagnosis across every capture linked to one investigation,
+    merging each capture's independently-built bundle into one combined
+    bundle before a single LLM call -- so a question naming "one of these
+    N devices" can actually be answered by looking across all of them,
+    instead of being scoped to whichever single capture happened to be
+    selected.
+    """
+    from app.models.db_models import Capture, Device, InvestigationCaptureLink
+
+    capture_rows = session.exec(
+        select(Capture)
+        .join(InvestigationCaptureLink, InvestigationCaptureLink.capture_id == Capture.id)
+        .where(InvestigationCaptureLink.investigation_id == investigation_id)
+    ).all()
+
+    captures_bundle = []
+    for capture in capture_rows:
+        device = session.get(Device, capture.device_id)
+        device_label = device.label if device else "unknown"
+        per_capture = build_diagnosis_bundle(session, capture.id, device_label, question)
+        captures_bundle.append({
+            "capture_id": capture.id,
+            "original_filename": capture.original_filename,
+            "device_label": device_label,
+            **per_capture,
+        })
+
+    bundle = {"question": question, "captures": captures_bundle}
+    report_text, llm_error = _run_llm(bundle, INVESTIGATION_SYSTEM_PROMPT, provider)
     return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}

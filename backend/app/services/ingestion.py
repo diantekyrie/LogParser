@@ -13,6 +13,7 @@ from app.parsers.anr import parse_anr
 from app.parsers.audio_focus import parse_audio_focus
 from app.parsers.battery_stats import parse_battery_uid_stats
 from app.parsers.bt_hci import parse_bt_hci_log
+from app.parsers.cdm_pairing import parse_cdm_pairing_events
 from app.parsers.crash_events import parse_crash_events
 from app.parsers.device_info import parse_device_info
 from app.parsers.foreground_service import parse_foreground_services
@@ -114,6 +115,7 @@ def _parse_sections_into_capture(capture: ParsedCapture, sections: dict) -> Pars
     if "system_log" in sections:
         capture.freeze_events = parse_freeze_events(sections["system_log"])
         capture.crash_events = parse_crash_events(sections["system_log"])
+        capture.cdm_pairing_events = parse_cdm_pairing_events(sections["system_log"])
     else:
         capture.parse_warnings.append("No 'SYSTEM LOG' section found")
 

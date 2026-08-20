@@ -263,6 +263,23 @@ class BatteryUidStatRow(SQLModel, table=True):
     source_line_end: int
 
 
+class CdmPairingEventRow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    level: str
+    tag: str
+    kind: str = Field(index=True)
+    mac_address: Optional[str] = Field(default=None, index=True)
+    display_name: Optional[str]
+    package_name: Optional[str] = Field(default=None, index=True)
+    association_id: Optional[int]
+    detail: str
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
 class WifiEventRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)

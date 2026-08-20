@@ -10,13 +10,13 @@ capture on file for the device rather than just the current upload.
 from pathlib import Path
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.llm import get_llm_client, list_providers
 from app.services.correlation import package_history_across_device
 from app.services.ingestion import parse_bugreport_zip
 from app.services.persistence import persist_capture
-from app.services.reasoning import diagnose
+from app.services.reasoning import diagnose, diagnose_investigation
 from app.services.summary import build_capture_summary
 from app.services.verification import verify_question_entities
 
@@ -252,3 +252,40 @@ def test_battery_question_surfaces_real_per_app_mah_attribution(session):
     # entity just because a diagnostic topic word happens to also be a
     # package fragment.
     assert "com.oceanwing.battery.cam" not in claims
+
+
+def test_diagnose_investigation_merges_bundles_across_all_linked_captures(session):
+    # This exercises the mechanics with the only two real fixtures on hand
+    # (both the same physical device, 6 days apart) -- the actual live find
+    # (a phone+watch pairing failure only visible by comparing two DIFFERENT
+    # devices' captures) needs the third-device fixtures that aren't
+    # committed here, but the merge/tagging behavior itself is what this
+    # pins: every capture linked to an investigation gets its own bundle,
+    # tagged with which capture/device it came from, in one combined result.
+    from app.models.db_models import Investigation
+
+    capture1 = persist_capture(
+        session, "frankel-pixel", CAPTURE_1.name, parse_bugreport_zip(CAPTURE_1),
+        investigation_label="test-investigation",
+    )
+    if CAPTURE_2.exists():
+        persist_capture(
+            session, "frankel-pixel", CAPTURE_2.name, parse_bugreport_zip(CAPTURE_2),
+            investigation_label="test-investigation",
+        )
+        expected_captures = 2
+    else:
+        expected_captures = 1
+
+    investigation = session.exec(
+        select(Investigation).where(Investigation.label == "test-investigation")
+    ).first()
+    result = diagnose_investigation(session, investigation.id, "Was there a crash on this device?")
+
+    assert len(result["bundle"]["captures"]) == expected_captures
+    first = result["bundle"]["captures"][0]
+    assert first["capture_id"] == capture1.id
+    assert first["device_label"] == "frankel-pixel"
+    assert first["original_filename"] == CAPTURE_1.name
+    # Crash-triggering question -> device-wide crash evidence per capture.
+    assert "device_wide_crash_evidence" in first

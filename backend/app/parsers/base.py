@@ -335,6 +335,40 @@ class BatteryUidStats:
 
 
 @dataclass
+class CdmPairingEvent:
+    """One Companion Device Manager / Fast Pair event from the system log --
+    the actual device-pairing flow (Bluetooth discovery, association,
+    secure-channel handshake) for Wear OS / Fast Pair companion pairing.
+    Verified against a real pairing session (a Pixel phone pairing with a
+    Pixel Watch): CDM_CompanionDeviceDiscoveryService, CDM_Association*,
+    CDM_BluetoothDeviceProcessor, CDM_DevicePresenceProcessor,
+    CDM_SecureChannel, CDM_CompanionTransport* tags, plus
+    com.google.android.gms's Fast Pair UI (HalfSheetActivity).
+
+    Well-known milestones get a specific `kind`; anything else at W/E log
+    level from a CDM_* tag (or FastPair-related activity) is still
+    captured as kind="anomaly" with the raw line in `detail` -- real
+    failure message text can't be fully enumerated in advance, but the log
+    level itself reliably flags something worth surfacing.
+    """
+
+    timestamp: str
+    level: str                      # D | I | W | E | V, as printed
+    tag: str                        # e.g. "CDM_AssociationStore"
+    kind: str                       # "device_found" | "association_requested" |
+                                      # "association_approved" | "association_added" |
+                                      # "association_updated" | "bt_device_connected" |
+                                      # "device_presence_connected" | "fast_pair_ui_opened" |
+                                      # "secure_channel_established" | "anomaly"
+    mac_address: Optional[str]
+    display_name: Optional[str]
+    package_name: Optional[str]     # owning app, e.g. com.google.android.apps.wear.companion
+    association_id: Optional[int]
+    detail: str                     # raw trailing message text
+    source_ref: SourceRef
+
+
+@dataclass
 class ParsedCapture:
     """Everything a capture's ingestion pipeline produced, ground-truth facts only."""
 
@@ -351,5 +385,6 @@ class ParsedCapture:
     packet_capture_summary: Optional[PacketCaptureSummary] = None
     wifi_events: list[WifiEvent] = field(default_factory=list)
     battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
+    cdm_pairing_events: list[CdmPairingEvent] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

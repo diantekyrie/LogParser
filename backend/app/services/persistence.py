@@ -16,6 +16,7 @@ from app.models.db_models import (
     BtHciEventRow,
     BtHciSummaryRow,
     Capture,
+    CdmPairingEventRow,
     CrashEventRow,
     Device,
     DeviceInfoRow,
@@ -232,6 +233,16 @@ def persist_capture(
             source_section=b.source_ref.section,
             source_line_start=b.source_ref.line_start,
             source_line_end=b.source_ref.line_end,
+        ))
+
+    for e in parsed.cdm_pairing_events:
+        session.add(CdmPairingEventRow(
+            capture_id=capture.id, timestamp=e.timestamp, level=e.level, tag=e.tag,
+            kind=e.kind, mac_address=e.mac_address, display_name=e.display_name,
+            package_name=e.package_name, association_id=e.association_id, detail=e.detail,
+            source_section=e.source_ref.section,
+            source_line_start=e.source_ref.line_start,
+            source_line_end=e.source_ref.line_end,
         ))
 
     freeze_counts: Counter = Counter()

@@ -12,7 +12,7 @@ from app.llm import list_providers
 from app.models.db_models import Capture, Device, Investigation, InvestigationCaptureLink
 from app.services.ingestion import parse_capture_file
 from app.services.persistence import persist_capture
-from app.services.reasoning import diagnose
+from app.services.reasoning import diagnose, diagnose_investigation
 from app.services.summary import build_capture_summary
 
 router = APIRouter()
@@ -125,4 +125,21 @@ def diagnose_capture(
     device = session.get(Device, capture.device_id)
 
     result = diagnose(session, capture_id, device.label, question, provider=provider)
+    return result
+
+
+@router.post("/investigations/{investigation_label}/diagnose")
+def diagnose_investigation_route(
+    investigation_label: str,
+    question: str = Form(...),
+    provider: str | None = Form(None),
+    session: Session = Depends(get_session),
+):
+    investigation = session.exec(
+        select(Investigation).where(Investigation.label == investigation_label)
+    ).first()
+    if investigation is None:
+        raise HTTPException(404, "Unknown investigation")
+
+    result = diagnose_investigation(session, investigation.id, question, provider=provider)
     return result

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.parsers.cdm_pairing import parse_cdm_pairing_events
 from app.parsers.crash_events import parse_crash_events
 from app.parsers.section_extractor import Section
 from app.services.ingestion import parse_bugreport_zip
@@ -303,6 +304,53 @@ def test_battery_uid_stats_attributed_to_real_packages(capture1):
     system_uid_entries = [s for s in capture1.battery_uid_stats if s.uid == 1000]
     assert len(system_uid_entries) == 1
     assert system_uid_entries[0].package is None
+
+
+# Real lines from a Pixel phone pairing with a Pixel Watch 5 (from a third
+# device's bugreport, not committed as a fixture -- 188MB). Reproduced
+# verbatim: this is exactly the case that came back "unknown, no data"
+# from two different LLM providers on a "network error while pairing"
+# question, even though the actual pairing flow -- and a concrete, repeated
+# transport failure -- was sitting in the log the whole time.
+PAIRING_LINES = """\
+06-25 10:08:03.850  1000  1731  9608 I ActivityTaskManager: START u0 {flg=0x30040000 xflg=0x4 cmp=com.google.android.gms/.nearby.discovery.fastpair.HalfSheetActivity (has extras)} with LAUNCH_SINGLE_INSTANCE from uid 10347
+06-25 10:08:12.959 10138 29050 29050 I CDM_CompanionDeviceDiscoveryService: onDeviceFound() (BT) 64:9d:38:bc:d5:eb 'Pixel Watch 5 35WD' - New device.
+06-25 10:08:12.960 10138 29050 29050 I CDM_CompanionDeviceActivity: onAssociationApproved() macAddress=64:9d:38:bc:d5:eb
+06-25 10:08:12.971  1000  1731  1731 I CDM_AssociationStore: Adding new association=[Association{mId=1, mUserId=0, mPackageName='com.google.android.apps.wear.companion', mDeviceMacAddress=64:9d:38:bc:d5:eb, mDisplayName='Pixel Watch 5 35WD', mDeviceProfile='android.app.role.COMPANION_DEVICE_WATCH', mSelfManaged=false}]...
+06-25 10:08:12.972  1000  1731  1731 I CDM_DevicePresenceProcessor: onBluetoothCompanionDeviceConnected: associationId( 1 )
+06-25 10:08:12.989  1000  1731  1731 W CDM_ActionRequestProcessor: Action REQUEST_NEARBY_ADVERTISING FAILED to activate.
+06-25 10:08:12.990  1000  1731  1731 W CDM_ActionRequestProcessor: Action REQUEST_TRANSPORT FAILED to activate.
+06-25 10:08:18.017  1000  1731  1731 W CDM_ActionRequestProcessor: Action REQUEST_TRANSPORT FAILED to activate.
+06-25 10:08:23.053  1000  1731  1731 W CDM_ActionRequestProcessor: Action REQUEST_TRANSPORT FAILED to activate.
+06-25 10:08:14.225 10347 32249 32249 E ActivityThread: Failed to find provider info for 64:9D:38:BC:D5:EB
+""".splitlines()
+
+
+def test_cdm_pairing_events_decoded_with_anomaly_catchall():
+    section = Section(name="system_log", priority=None, line_start=500,
+                       line_end=500 + len(PAIRING_LINES) - 1,
+                       lines=PAIRING_LINES, kind="log")
+    events = parse_cdm_pairing_events(section)
+    kinds = [e.kind for e in events]
+    assert "fast_pair_ui_opened" in kinds
+    assert "device_found" in kinds
+    assert "association_approved" in kinds
+    assert "association_added" in kinds
+    assert "device_presence_connected" in kinds
+    assert "provider_lookup_failed" in kinds
+
+    added = next(e for e in events if e.kind == "association_added")
+    assert added.mac_address == "64:9d:38:bc:d5:eb"
+    assert added.display_name == "Pixel Watch 5 35WD"
+    assert added.package_name == "com.google.android.apps.wear.companion"
+    assert added.association_id == 1
+
+    # The real value of the generic W/E catch-all: three separate
+    # "Action REQUEST_TRANSPORT FAILED to activate" lines, never
+    # individually anticipated, still surface as anomalies.
+    anomalies = [e for e in events if e.kind == "anomaly"]
+    assert sum(1 for e in anomalies if "REQUEST_TRANSPORT FAILED" in e.detail) == 3
+    assert any("REQUEST_NEARBY_ADVERTISING FAILED" in e.detail for e in anomalies)
 
 
 def test_second_capture_also_parses_cleanly():
