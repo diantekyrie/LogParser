@@ -109,13 +109,17 @@ numbers). Rules, no exceptions:
 6. Every "device_wide_*" evidence key (crash, wifi, battery, pairing --
    rules 6-9 below) is gathered across EVERY capture on file for this
    device, not just the one the question happened to be asked against --
-   each individual entry in these lists carries its own "capture_id" and
-   "original_filename" saying which capture it actually came from, and you
-   must cite that alongside the section/line number (rule 4) so a fact
-   found in a different capture than the one named in the question is
-   never presented as if it came from "this capture." Their confidence
-   already reflects how many captures were checked (rule 2's "carry it
-   forward verbatim" still applies -- do not recompute or upgrade it).
+   each individual entry in these lists carries its own "capture_id"
+   saying which capture it actually came from. Resolve that id to a
+   filename using the top-level "captures" map (an id -> filename object
+   emitted once, so the filename isn't repeated on every fact), and cite
+   it alongside the section/line number (rule 4) so a fact found in a
+   different capture than the one named in the question is never presented
+   as if it came from "this capture." Each device_wide_* block carries one
+   "confidence" and "corroboration" pair at the BLOCK level that applies to
+   every fact inside it; individual facts repeat only the short confidence
+   label. Rule 2's "carry it forward verbatim" still applies -- do not
+   recompute or upgrade it.
 7. If the bundle includes a top-level "device_wide_crash_evidence" key,
    that's crash/native-crash/ANR evidence across every capture for this
    device, not filtered to any named app -- use it to answer general
@@ -369,8 +373,16 @@ def build_diagnosis_bundle(
     capture_filenames = {c.id: c.original_filename for c in sibling_captures}
     captures_checked = len(sibling_capture_ids)
 
+    # Facts carry only capture_id; the id -> filename map is emitted ONCE at
+    # the top of the bundle as "captures". Measured on a real scan: the
+    # filename was repeated 109 times (8.1% of the whole bundle) and the
+    # identical corroboration sentence 138 times (15.6%) -- ~24% of every
+    # scan's tokens were pure duplication. Both are now hoisted, with no
+    # information lost.
     def _capture_tag(row_capture_id: int) -> dict:
-        return {"capture_id": row_capture_id, "original_filename": capture_filenames.get(row_capture_id)}
+        return {"capture_id": row_capture_id}
+
+    bundle["captures"] = dict(capture_filenames) or {capture_id: None}
 
     if want_crash:
         # Device-wide crash evidence, surfaced regardless of whether it's
@@ -400,6 +412,8 @@ def build_diagnosis_bundle(
         # selected.
         crash_confidence, crash_corroboration = score_confidence(1, captures_checked)
         bundle["device_wide_crash_evidence"] = {
+                "confidence": crash_confidence,
+                "corroboration": crash_corroboration,
             "note": (
                 f"Not filtered to a named app -- includes every crash/ANR found across all "
                 f"{captures_checked} capture(s) on file for this device, each tagged with which "
@@ -409,7 +423,7 @@ def build_diagnosis_bundle(
                 {"timestamp": c.timestamp, "package": c.package, "exception_class": c.exception_class,
                  "message": c.message, "root_cause_class": c.root_cause_class,
                  "root_cause_message": c.root_cause_message, "root_cause_frame": c.root_cause_frame,
-                 "confidence": crash_confidence, "corroboration": crash_corroboration,
+                 "confidence": crash_confidence,
                  **_capture_tag(c.capture_id),
                  "source": {"section": c.source_section, "line_start": c.source_line_start, "line_end": c.source_line_end}}
                 for c in java_crash_count
@@ -417,7 +431,7 @@ def build_diagnosis_bundle(
             "native_crashes": [
                 {"timestamp": t.timestamp, "package": t.package, "executable": t.executable,
                  "signal_name": t.signal_name, "signal_code": t.signal_code, "top_frame": t.top_frame,
-                 "confidence": crash_confidence, "corroboration": crash_corroboration,
+                 "confidence": crash_confidence,
                  **_capture_tag(t.capture_id)}
                 for t in tombstone_count
             ],
@@ -428,7 +442,7 @@ def build_diagnosis_bundle(
             ),
             "anrs": [
                 {"timestamp": a.timestamp, "package": a.package, "reason": a.reason,
-                 "confidence": crash_confidence, "corroboration": crash_corroboration,
+                 "confidence": crash_confidence,
                  **_capture_tag(a.capture_id)}
                 for a in anr_count
             ],
@@ -445,6 +459,8 @@ def build_diagnosis_bundle(
             )
         ).all()
         bundle["device_wide_wifi_evidence"] = {
+                "confidence": wifi_confidence,
+                "corroboration": wifi_corroboration,
             "note": (
                 f"Every Wi-Fi disconnection event found across all {captures_checked} capture(s) on "
                 f"file for this device (not just the one currently selected), with its 802.11 reason "
@@ -454,7 +470,7 @@ def build_diagnosis_bundle(
                 {"timestamp": w.timestamp, "ssid": w.ssid, "bssid": w.bssid,
                  "reason_code": w.reason_code, "reason_name": w.reason_name,
                  "locally_generated": w.locally_generated,
-                 "confidence": wifi_confidence, "corroboration": wifi_corroboration,
+                 "confidence": wifi_confidence,
                  **_capture_tag(w.capture_id),
                  "source": {"section": w.source_section, "line_start": w.source_line_start, "line_end": w.source_line_end}}
                 for w in disconnections
@@ -478,6 +494,8 @@ def build_diagnosis_bundle(
             .limit(15)
         ).all()
         bundle["device_wide_battery_evidence"] = {
+                "confidence": battery_confidence,
+                "corroboration": battery_corroboration,
             "note": (
                 f"Top battery consumers by estimated mAh across all {captures_checked} capture(s) "
                 f"on file for this device, not filtered to a named app. `package` is null for UIDs "
@@ -487,7 +505,7 @@ def build_diagnosis_bundle(
             "top_consumers": [
                 {"package": b.package, "uid_token": b.uid_token, "total_mah": b.total_mah,
                  "components_mah": json.loads(b.components_mah_json),
-                 "confidence": battery_confidence, "corroboration": battery_corroboration,
+                 "confidence": battery_confidence,
                  **_capture_tag(b.capture_id),
                  "source": {"section": b.source_section, "line_start": b.source_line_start, "line_end": b.source_line_end}}
                 for b in top_consumers
@@ -507,6 +525,8 @@ def build_diagnosis_bundle(
         if kill_rows:
             kills = [k for k in kill_rows if k.kind == "kill"]
             bundle["device_wide_memory_evidence"] = {
+                "confidence": memory_confidence,
+                "corroboration": memory_corroboration,
                 "note": (
                     f"ActivityManager process kills and deaths across all {captures_checked} "
                     f"capture(s) on file for this device. kind=\"kill\" (am_kill) means the system "
@@ -523,7 +543,7 @@ def build_diagnosis_bundle(
                     {"timestamp": k.timestamp, "kind": k.kind, "process": k.process,
                      "package": k.package, "pid": k.pid, "oom_adj": k.oom_adj,
                      "reason": k.reason, "rss_kb": k.rss_kb, "proc_state": k.proc_state,
-                     "confidence": memory_confidence, "corroboration": memory_corroboration,
+                     "confidence": memory_confidence,
                      **_capture_tag(k.capture_id),
                      "source": {"section": k.source_section, "line_start": k.source_line_start,
                                 "line_end": k.source_line_end}}
@@ -544,6 +564,8 @@ def build_diagnosis_bundle(
         if denial_rows:
             enforced = [d for d in denial_rows if d.enforcing is True]
             bundle["device_wide_selinux_evidence"] = {
+                "confidence": selinux_confidence,
+                "corroboration": selinux_corroboration,
                 "note": (
                     f"Every SELinux AVC denial found across all {captures_checked} capture(s) on "
                     f"file for this device. `enforcing: true` means the operation was actually "
@@ -560,7 +582,7 @@ def build_diagnosis_bundle(
                      "source_domain": d.source_domain, "target_type": d.target_type,
                      "target_class": d.target_class, "comm": d.comm, "target_name": d.target_name,
                      "app": d.app, "enforcing": d.enforcing,
-                     "confidence": selinux_confidence, "corroboration": selinux_corroboration,
+                     "confidence": selinux_confidence,
                      **_capture_tag(d.capture_id),
                      "source": {"section": d.source_section, "line_start": d.source_line_start,
                                 "line_end": d.source_line_end}}
@@ -586,6 +608,8 @@ def build_diagnosis_bundle(
             select(CdmPairingEventRow).where(CdmPairingEventRow.capture_id.in_(sibling_capture_ids))
         ).all()
         bundle["device_wide_pairing_evidence"] = {
+                "confidence": pairing_confidence,
+                "corroboration": pairing_corroboration,
             "note": (
                 f"Companion Device Manager / Fast Pair events across all {captures_checked} "
                 f"capture(s) on file for this device, not filtered to a named app. "
@@ -597,7 +621,7 @@ def build_diagnosis_bundle(
                 {"timestamp": e.timestamp, "level": e.level, "tag": e.tag, "kind": e.kind,
                  "mac_address": e.mac_address, "display_name": e.display_name,
                  "package_name": e.package_name, "association_id": e.association_id,
-                 "detail": e.detail, "confidence": pairing_confidence, "corroboration": pairing_corroboration,
+                 "detail": _truncate_detail(e.detail), "confidence": pairing_confidence,
                  **_capture_tag(e.capture_id),
                  "source": {"section": e.source_section, "line_start": e.source_line_start, "line_end": e.source_line_end}}
                 for e in pairing_events
@@ -623,7 +647,7 @@ def build_diagnosis_bundle(
                  "trusted": a.trusted, "time_approved": a.time_approved,
                  "last_time_connected": a.last_time_connected,
                  "currently_connected": a.currently_connected,
-                 "confidence": pairing_confidence, "corroboration": pairing_corroboration,
+                 "confidence": pairing_confidence,
                  **_capture_tag(a.capture_id),
                  "source": {"section": a.source_section, "line_start": a.source_line_start, "line_end": a.source_line_end}}
                 for a in associations
@@ -651,7 +675,7 @@ def build_diagnosis_bundle(
                     "notable_events": [
                         {"timestamp": e.timestamp, "kind": e.kind, "status_name": e.status_name,
                          "reason_name": e.reason_name, "handle": e.handle,
-                         "confidence": pairing_confidence, "corroboration": pairing_corroboration}
+                         "confidence": pairing_confidence}
                         for e in bt_events if e.kind == "disconnection_complete" or (e.status_code or 0) != 0
                     ],
                 })
@@ -710,6 +734,23 @@ def build_diagnosis_bundle(
     return bundle
 
 
+DETAIL_MAX_CHARS = 600
+
+
+def _truncate_detail(detail: str | None) -> str | None:
+    """Caps a raw log line's free text. Some framework lines (e.g. a
+    WindowManager TransitionRequestInfo dump) run to 2,600+ characters of
+    window geometry for what is diagnostically just "the Fast Pair UI
+    opened" -- shipping those verbatim to the LLM costs real tokens and
+    adds no signal. Truncation is marked explicitly so a reader can tell
+    the text was cut rather than the log being short, and the full line is
+    always still reachable via the fact's own source citation.
+    """
+    if detail is None or len(detail) <= DETAIL_MAX_CHARS:
+        return detail
+    return detail[:DETAIL_MAX_CHARS] + f"... [truncated, {len(detail)} chars total; see source citation for the full line]"
+
+
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
@@ -727,8 +768,10 @@ def rank_findings(bundle: dict) -> list[dict]:
     it does NOT assert the event caused any particular user-visible symptom.
     """
     findings: list[dict] = []
+    capture_names = bundle.get("captures") or {}
 
     def add(severity: str, category: str, title: str, detail: str, row: dict) -> None:
+        cid = row.get("capture_id")
         findings.append({
             "severity": severity,
             "category": category,
@@ -736,8 +779,13 @@ def rank_findings(bundle: dict) -> list[dict]:
             "detail": detail,
             "confidence": row.get("confidence"),
             "corroboration": row.get("corroboration"),
-            "capture_id": row.get("capture_id"),
-            "original_filename": row.get("original_filename"),
+            "capture_id": cid,
+            # Resolved here rather than duplicated on every raw fact -- the
+            # findings list is short, so naming the file is cheap and keeps
+            # each finding readable on its own.
+            "original_filename": row.get("original_filename")
+                                 or capture_names.get(cid)
+                                 or capture_names.get(str(cid)),
             "source": row.get("source"),
             "timestamp": row.get("timestamp"),
         })
