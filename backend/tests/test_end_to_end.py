@@ -404,3 +404,42 @@ def test_ranked_findings_severity_is_computed_and_repeats_are_grouped():
 
     # Every finding carries a confidence label forward (no nulls).
     assert all(f["confidence"] for f in findings)
+
+
+def test_every_keyword_trigger_regex_actually_matches_its_own_keywords():
+    # Regression: MEMORY_TRIGGER_RE was once written with a literal
+    # backspace (0x08) where \b was intended, so it silently matched
+    # NOTHING. Nothing caught it, because auto-scan bypasses triggers
+    # entirely and no test asked a memory-worded question. This asserts
+    # each trigger fires on a word it exists to catch, and that no pattern
+    # contains a stray control character.
+    from app.services import reasoning as r
+
+    cases = [
+        (r.CRASH_TRIGGER_RE, "was there a crash?"),
+        (r.WIFI_TRIGGER_RE, "did wifi disconnect?"),
+        (r.BATTERY_TRIGGER_RE, "what drained the battery?"),
+        (r.PAIRING_TRIGGER_RE, "did bluetooth pairing fail?"),
+        (r.SELINUX_TRIGGER_RE, "any selinux denials?"),
+        (r.MEMORY_TRIGGER_RE, "was there a memory leak?"),
+        (r.MULTI_CAPTURE_TRIGGER_RE, "has it ever happened across all captures?"),
+    ]
+    for regex, sample in cases:
+        assert regex.search(sample), f"{regex.pattern!r} failed to match {sample!r}"
+        assert not any(ord(ch) < 32 for ch in regex.pattern), \
+            f"control character in pattern {regex.pattern!r}"
+
+
+def test_memory_question_surfaces_process_kill_evidence(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Did anything get killed for memory?")
+    evidence = result["bundle"].get("device_wide_memory_evidence")
+    if evidence is None:
+        pytest.skip("fixture has no am_kill/am_proc_died events")
+    # Deliberate kills are counted separately from plain process deaths --
+    # summing them would overstate what the log actually records.
+    assert evidence["deliberate_kills"] <= evidence["total_events"]
+    assert all(e["kind"] in {"kill", "died"} for e in evidence["events"])
+    for e in evidence["events"]:
+        if e["kind"] == "died":
+            assert e["reason"] is None  # am_proc_died carries no reason

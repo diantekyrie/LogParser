@@ -24,6 +24,7 @@ from app.parsers.media_session import parse_media_sessions
 from app.parsers.package_info import parse_packages
 from app.parsers.packet_analysis import analyze_packet_capture
 from app.parsers.pcap import parse_pcap
+from app.parsers.process_kills import parse_process_kills
 from app.parsers.section_extractor import extract_sections, extract_sections_from_text
 from app.parsers.selinux import parse_selinux_denials
 from app.parsers.tombstone import parse_tombstone
@@ -177,6 +178,10 @@ def _parse_sections_into_capture(capture: ParsedCapture, sections: dict) -> Pars
         if section_name in sections:
             selinux_denials.extend(parse_selinux_denials(sections[section_name]))
     capture.selinux_denials = selinux_denials
+    # am_kill / am_proc_died are written to the EVENT LOG buffer, same as
+    # AVC denials.
+    if "event_log" in sections:
+        capture.process_kills = parse_process_kills(sections["event_log"])
     if "event_log" not in sections:
         capture.parse_warnings.append("No 'EVENT LOG' section found (SELinux denials may be undercounted)")
 

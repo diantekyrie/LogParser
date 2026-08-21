@@ -443,6 +443,31 @@ class CdmPairingEvent:
 
 
 @dataclass
+class ProcessKillEvent:
+    """An ActivityManager process kill (am_kill) or death (am_proc_died).
+
+    `kind` distinguishes them: a "kill" carries a `reason` explaining why
+    the system killed it; a "died" only records that the process went away
+    and does NOT by itself establish the system killed it deliberately.
+    `oom_adj` is the raw killability score (roughly 0 = foreground/critical,
+    up toward ~1000 = empty cached), reported without interpretation since
+    the exact bands vary by Android version and device policy.
+    """
+
+    timestamp: str
+    kind: str                       # "kill" | "died"
+    user_id: Optional[int]
+    pid: Optional[int]
+    process: str                    # may be "pkg:subprocess"
+    package: Optional[str]          # the part before ":", when present
+    oom_adj: Optional[int]
+    reason: Optional[str]           # am_kill only
+    rss_kb: Optional[int]           # am_kill on newer builds only
+    proc_state: Optional[int]       # am_proc_died only
+    source_ref: SourceRef
+
+
+@dataclass
 class SelinuxDenial:
     """One SELinux AVC denial from the system log.
 
@@ -513,5 +538,6 @@ class ParsedCapture:
     cdm_pairing_events: list[CdmPairingEvent] = field(default_factory=list)
     companion_device_associations: list[CompanionDeviceAssociation] = field(default_factory=list)
     selinux_denials: list[SelinuxDenial] = field(default_factory=list)
+    process_kills: list[ProcessKillEvent] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

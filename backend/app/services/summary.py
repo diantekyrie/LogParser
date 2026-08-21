@@ -26,6 +26,7 @@ from app.models.db_models import (
     PackageFactRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    ProcessKillEventRow,
     SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
@@ -90,6 +91,10 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
         "anrs": session.exec(
             select(func.count()).select_from(AnrRow).where(AnrRow.capture_id == capture_id)
         ).one(),
+        "process_kills": session.exec(
+            select(func.count()).select_from(ProcessKillEventRow)
+            .where(ProcessKillEventRow.capture_id == capture_id, ProcessKillEventRow.kind == "kill")
+        ).one(),
         "selinux_denials": session.exec(
             select(func.count()).select_from(SelinuxDenialRow)
             .where(SelinuxDenialRow.capture_id == capture_id)
@@ -140,6 +145,9 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     ).all()
     wifi_event_rows = session.exec(
         select(WifiEventRow).where(WifiEventRow.capture_id == capture_id)
+    ).all()
+    process_kill_rows = session.exec(
+        select(ProcessKillEventRow).where(ProcessKillEventRow.capture_id == capture_id)
     ).all()
     selinux_rows = session.exec(
         select(SelinuxDenialRow).where(SelinuxDenialRow.capture_id == capture_id)
@@ -198,6 +206,16 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                          + (" (locally initiated)" if w.locally_generated else ""),
                 "source": _source(w.source_section, w.source_line_start, w.source_line_end),
             })
+    # Only deliberate kills go on the timeline -- processes dying is normal
+    # Android lifecycle and would drown out real events.
+    for k in process_kill_rows:
+        if k.kind != "kill":
+            continue
+        timeline.append({
+            "timestamp": k.timestamp, "kind": "process_kill", "severity": "warning",
+            "label": f"killed {k.process}" + (f": {k.reason}" if k.reason else ""),
+            "source": _source(k.source_section, k.source_line_start, k.source_line_end),
+        })
     timeline.sort(key=lambda e: e["timestamp"])
 
     media_session_rows = session.exec(
@@ -289,6 +307,14 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                 "anomalies": json.loads(packet_analysis_row.anomalies_json),
             } if packet_analysis_row else None
         ),
+        "process_kills": [
+            {
+                "timestamp": k.timestamp, "kind": k.kind, "process": k.process,
+                "package": k.package, "pid": k.pid, "oom_adj": k.oom_adj,
+                "reason": k.reason, "rss_kb": k.rss_kb, "proc_state": k.proc_state,
+                "source": _source(k.source_section, k.source_line_start, k.source_line_end),
+            } for k in process_kill_rows
+        ],
         "selinux_denials": [
             {
                 "timestamp": d.timestamp, "verdict": d.verdict, "permissions": d.permissions,
@@ -359,6 +385,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
     device_infos = []
     crash_events, tombstones, anrs, wifi_events = [], [], [], []
     selinux_denials: list[dict] = []
+    process_kills: list[dict] = []
     top_battery_consumers, timeline, media_sessions, focus_stack = [], [], [], []
     bt_hci_summaries, packet_capture_summaries, packet_analyses = [], [], []
     freeze_offenders_by_pkg: dict[str, dict] = {}
@@ -376,6 +403,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
         anrs.extend(_tag_rows(cap["anrs"], cid, fname))
         wifi_events.extend(_tag_rows(cap["wifi_events"], cid, fname))
         selinux_denials.extend(_tag_rows(cap["selinux_denials"], cid, fname))
+        process_kills.extend(_tag_rows(cap["process_kills"], cid, fname))
         top_battery_consumers.extend(_tag_rows(cap["top_battery_consumers"], cid, fname))
         timeline.extend(_tag_rows(cap["timeline"], cid, fname))
         media_sessions.extend(_tag_rows(cap["media_sessions"], cid, fname))
@@ -415,6 +443,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
         "packet_analysis": packet_analyses,
         "wifi_events": wifi_events,
         "selinux_denials": selinux_denials,
+        "process_kills": process_kills,
         "top_battery_consumers": top_battery_consumers[:15],
         "timeline": timeline,
         "media_sessions": media_sessions,

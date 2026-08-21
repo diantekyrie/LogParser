@@ -302,6 +302,27 @@ class CdmPairingEventRow(SQLModel, table=True):
     source_line_end: int
 
 
+class ProcessKillEventRow(SQLModel, table=True):
+    """An ActivityManager process kill or death. `kind` separates a kill
+    (carries a reason) from a plain death (does not)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    kind: str = Field(index=True)
+    user_id: Optional[int]
+    pid: Optional[int]
+    process: str
+    package: Optional[str] = Field(default=None, index=True)
+    oom_adj: Optional[int]
+    reason: Optional[str]
+    rss_kb: Optional[int]
+    proc_state: Optional[int]
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
 class SelinuxDenialRow(SQLModel, table=True):
     """One parsed SELinux AVC denial. `enforcing` distinguishes a real
     blocked operation (permissive=0) from a logged-but-allowed one

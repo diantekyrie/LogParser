@@ -31,6 +31,7 @@ from app.models.db_models import (
     PackageFactRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    ProcessKillEventRow,
     SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
@@ -261,6 +262,16 @@ def persist_capture(
             source_section=e.source_ref.section,
             source_line_start=e.source_ref.line_start,
             source_line_end=e.source_ref.line_end,
+        ))
+
+    for k in parsed.process_kills:
+        session.add(ProcessKillEventRow(
+            capture_id=capture.id, timestamp=k.timestamp, kind=k.kind,
+            user_id=k.user_id, pid=k.pid, process=k.process, package=k.package,
+            oom_adj=k.oom_adj, reason=k.reason, rss_kb=k.rss_kb, proc_state=k.proc_state,
+            source_section=k.source_ref.section,
+            source_line_start=k.source_ref.line_start,
+            source_line_end=k.source_ref.line_end,
         ))
 
     for d in parsed.selinux_denials:

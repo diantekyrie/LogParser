@@ -730,6 +730,7 @@ export default function App() {
       top_battery_consumers: summary.top_battery_consumers.filter(appMatches),
       wifi_events: summary.wifi_events.filter((row) => matchesQuery(row, appFilter) && timeMatches(row)),
       selinux_denials: (summary.selinux_denials || []).filter((row) => appMatches(row) && timeMatches(row)),
+      process_kills: (summary.process_kills || []).filter((row) => appMatches(row) && timeMatches(row)),
       top_freeze_offenders: summary.top_freeze_offenders.filter(appMatches),
       media_sessions: summary.media_sessions.filter(appMatches),
       timeline: summary.timeline.filter((row) => (
@@ -890,6 +891,7 @@ export default function App() {
                 <StatCard label="ANRs" value={c.anrs} tone={c.anrs > 0 ? "critical" : "ok"} />
                 <StatCard label="Wi-Fi disconnects" value={c.wifi_disconnections} tone={c.wifi_disconnections > 0 ? "warning" : "ok"} />
                 <StatCard label="SELinux blocked" value={c.selinux_enforced_denials ?? 0} tone={(c.selinux_enforced_denials ?? 0) > 0 ? "warning" : "ok"} />
+                <StatCard label="Processes killed" value={c.process_kills ?? 0} tone={(c.process_kills ?? 0) > 0 ? "warning" : "ok"} />
               </div>
             )}
 
@@ -1139,6 +1141,7 @@ export default function App() {
                       <StatCard label="ANRs" value={c.anrs} tone={c.anrs > 0 ? "critical" : "ok"} />
                       <StatCard label="Wi-Fi disconnections" value={c.wifi_disconnections} tone="default" />
                       <StatCard label="SELinux denials" value={c.selinux_denials ?? 0} tone={(c.selinux_enforced_denials ?? 0) > 0 ? "warning" : "default"} />
+                      <StatCard label="Processes killed" value={c.process_kills ?? 0} tone={(c.process_kills ?? 0) > 0 ? "warning" : "default"} />
                       <StatCard label="Freeze events" value={c.freeze_events} tone="default" />
                       <StatCard label="Unfreeze events" value={c.unfreeze_events} tone="default" />
                       <StatCard label="Packages" value={c.packages} tone="default" />
@@ -1206,6 +1209,35 @@ export default function App() {
                               <td>{t.signal_name}{t.signal_code ? ` (${t.signal_code})` : ""}</td>
                               <td className="small">{t.top_frame}</td>
                               <td><CaptureTag filename={t.original_filename} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </section>
+                  )}
+
+                  {filtered.process_kills.length > 0 && (
+                    <section className="panel">
+                      <h2>Process kills &amp; deaths</h2>
+                      <p className="muted small">
+                        <strong>Killed</strong> means the system deliberately ended the process and recorded a reason.
+                        <strong> Died</strong> only records that the process went away — it does not by itself mean the
+                        system killed it. Processes being killed is normal Android memory management; the reason and
+                        OOM adjustment are what make one worth looking at.
+                      </p>
+                      <table className="fact-table">
+                        <thead><tr><th>Time</th><th>Event</th><th>Process</th><th>Reason</th><th>OOM adj</th><th>RSS (kB)</th><th>Capture</th><th>Cite</th></tr></thead>
+                        <tbody>
+                          {filtered.process_kills.map((k, i) => (
+                            <tr key={i}>
+                              <td className="small">{k.timestamp}</td>
+                              <td className={k.kind === "kill" ? "warn-text" : ""}>{k.kind === "kill" ? "killed" : "died"}</td>
+                              <td className="small">{k.process}</td>
+                              <td className="small">{k.reason ?? <span className="muted">not recorded</span>}</td>
+                              <td>{k.oom_adj ?? ""}</td>
+                              <td>{k.rss_kb || ""}</td>
+                              <td><CaptureTag filename={k.original_filename} /></td>
+                              <td><SourceTag source={k.source} /></td>
                             </tr>
                           ))}
                         </tbody>

@@ -30,6 +30,7 @@ from app.models.db_models import (
     DeviceInfoRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    ProcessKillEventRow,
     SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
@@ -58,6 +59,15 @@ WIFI_TRIGGER_RE = re.compile(
 BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.IGNORECASE)
 PAIRING_TRIGGER_RE = re.compile(
     r"\b(pair(?:ed|ing)?|bond(?:ed|ing)?|bluetooth|\bbt\b|companion|network|connect(?:ed|ion)?)\b",
+    re.IGNORECASE,
+)
+MEMORY_TRIGGER_RE = re.compile(
+    # Short tokens like "ram"/"oom" are whole-word only; a trailing \w* on
+    # them false-triggers on ordinary words ("ramen" -> memory evidence).
+    # Longer, unambiguous stems keep the suffix wildcard so "leaking" and
+    # "reclaimed" still match.
+    r"\b(?:memor\w+|leak\w*|reclaim\w*|kill(?:ed|s|ing)?|lowmemory|"
+    r"ram|oom|lmk|pss|rss|cached)\b",
     re.IGNORECASE,
 )
 SELINUX_TRIGGER_RE = re.compile(
@@ -149,6 +159,14 @@ numbers). Rules, no exceptions:
     separately from the total. A denial says an operation was blocked --
     it does NOT by itself establish that any user-visible feature broke,
     so do not assert a functional impact the bundle does not state.
+10c. If the bundle includes "device_wide_memory_evidence", those are
+    ActivityManager process kills/deaths. Keep kind="kill" (deliberate,
+    has a `reason`) distinct from kind="died" (process went away, no
+    reason recorded) -- never describe a plain death as the system killing
+    something. Processes being killed is normal Android memory management;
+    report counts and reasons plainly and do not assert the device is
+    "leaking memory" or "under memory pressure" unless a reason field
+    actually says so.
 11. If the bundle includes a "device_context" object, that's real parsed
     device info (build fingerprint, kernel, security patch, etc.) -- open
     the report with a short "Device" line or table using it verbatim, not
@@ -276,6 +294,7 @@ def build_diagnosis_bundle(
     want_battery = include_all_evidence or bool(BATTERY_TRIGGER_RE.search(question))
     want_pairing = include_all_evidence or bool(PAIRING_TRIGGER_RE.search(question))
     want_selinux = include_all_evidence or bool(SELINUX_TRIGGER_RE.search(question))
+    want_memory = include_all_evidence or bool(MEMORY_TRIGGER_RE.search(question))
 
     claims = []
     for ev in entities:
@@ -460,6 +479,43 @@ def build_diagnosis_bundle(
             ],
         }
 
+    if want_memory:
+        # Process kills are how memory pressure becomes observable. An
+        # am_kill carries a reason; an am_proc_died only records that the
+        # process went away, so the two are counted separately rather than
+        # summed into one "N processes killed" number that would overstate
+        # what the log actually says.
+        memory_confidence, memory_corroboration = score_confidence(1, captures_checked)
+        kill_rows = session.exec(
+            select(ProcessKillEventRow).where(ProcessKillEventRow.capture_id.in_(sibling_capture_ids))
+        ).all()
+        if kill_rows:
+            kills = [k for k in kill_rows if k.kind == "kill"]
+            bundle["device_wide_memory_evidence"] = {
+                "note": (
+                    f"ActivityManager process kills and deaths across all {captures_checked} "
+                    f"capture(s) on file for this device. kind=\"kill\" (am_kill) means the system "
+                    f"deliberately killed the process and recorded a `reason`; kind=\"died\" "
+                    f"(am_proc_died) only records that the process went away and does NOT by "
+                    f"itself establish the system killed it. `oom_adj` is the raw killability "
+                    f"score (roughly 0 = foreground/critical, up toward ~1000 = empty cached) -- "
+                    f"the exact bands vary by Android version, so do not interpret a specific "
+                    f"value beyond 'higher means more disposable'."
+                ),
+                "total_events": len(kill_rows),
+                "deliberate_kills": len(kills),
+                "events": [
+                    {"timestamp": k.timestamp, "kind": k.kind, "process": k.process,
+                     "package": k.package, "pid": k.pid, "oom_adj": k.oom_adj,
+                     "reason": k.reason, "rss_kb": k.rss_kb, "proc_state": k.proc_state,
+                     "confidence": memory_confidence, "corroboration": memory_corroboration,
+                     **_capture_tag(k.capture_id),
+                     "source": {"section": k.source_section, "line_start": k.source_line_start,
+                                "line_end": k.source_line_end}}
+                    for k in kill_rows
+                ],
+            }
+
     if want_selinux:
         # An SELinux denial with permissive=0 is a real, already-happened
         # functional failure: the kernel blocked the operation. permissive=1
@@ -617,6 +673,7 @@ def build_diagnosis_bundle(
         "device_wide_wifi_evidence": "Wi-Fi disconnection evidence",
         "device_wide_battery_evidence": "battery consumption evidence",
         "device_wide_selinux_evidence": "SELinux policy denials",
+        "device_wide_memory_evidence": "process kill / memory pressure evidence",
         "device_wide_pairing_evidence": "Bluetooth / Companion Device Manager pairing evidence",
         "bt_hci_summary": "Bluetooth HCI packet log",
         "packet_capture_summary": "packet capture container metadata",
@@ -706,6 +763,20 @@ def rank_findings(bundle: dict) -> list[dict]:
         add("HIGH" if e.get("level") == "E" else "MEDIUM", "pairing",
             f"{e.get('tag')} logged a {'error' if e.get('level') == 'E' else 'warning'}-level anomaly",
             e.get("detail") or "", e)
+
+    memory = bundle.get("device_wide_memory_evidence") or {}
+    for k in memory.get("events", []):
+        # A deliberate kill with a recorded reason is the actionable case.
+        # A bare death is informational -- processes dying is normal Android
+        # lifecycle, so ranking every one as a problem would be noise.
+        if k.get("kind") != "kill":
+            continue
+        rss = k.get("rss_kb")
+        add("MEDIUM", "memory",
+            f"System killed {k.get('process') or 'unknown process'}",
+            f"reason: {k.get('reason') or 'not recorded'}"
+            + (f", oom_adj {k.get('oom_adj')}" if k.get("oom_adj") is not None else "")
+            + (f", {rss} kB RSS" if rss else ""), k)
 
     selinux = bundle.get("device_wide_selinux_evidence") or {}
     for d in selinux.get("denials", []):
