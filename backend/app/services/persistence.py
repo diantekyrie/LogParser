@@ -31,6 +31,7 @@ from app.models.db_models import (
     PackageFactRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
 )
@@ -260,6 +261,19 @@ def persist_capture(
             source_section=e.source_ref.section,
             source_line_start=e.source_ref.line_start,
             source_line_end=e.source_ref.line_end,
+        ))
+
+    for d in parsed.selinux_denials:
+        session.add(SelinuxDenialRow(
+            capture_id=capture.id, timestamp=d.timestamp, verdict=d.verdict,
+            permissions=" ".join(d.permissions),
+            source_context=d.source_context, source_domain=d.source_domain,
+            target_context=d.target_context, target_type=d.target_type,
+            target_class=d.target_class, comm=d.comm, target_name=d.target_name,
+            app=d.app, enforcing=d.enforcing,
+            source_section=d.source_ref.section,
+            source_line_start=d.source_ref.line_start,
+            source_line_end=d.source_ref.line_end,
         ))
 
     for a in parsed.companion_device_associations:

@@ -26,6 +26,7 @@ from app.models.db_models import (
     PackageFactRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
 )
@@ -89,6 +90,14 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
         "anrs": session.exec(
             select(func.count()).select_from(AnrRow).where(AnrRow.capture_id == capture_id)
         ).one(),
+        "selinux_denials": session.exec(
+            select(func.count()).select_from(SelinuxDenialRow)
+            .where(SelinuxDenialRow.capture_id == capture_id)
+        ).one(),
+        "selinux_enforced_denials": session.exec(
+            select(func.count()).select_from(SelinuxDenialRow)
+            .where(SelinuxDenialRow.capture_id == capture_id, SelinuxDenialRow.enforcing == True)  # noqa: E712
+        ).one(),
         "wifi_disconnections": session.exec(
             select(func.count()).select_from(WifiEventRow)
             .where(WifiEventRow.capture_id == capture_id, WifiEventRow.kind == "disconnection")
@@ -131,6 +140,9 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     ).all()
     wifi_event_rows = session.exec(
         select(WifiEventRow).where(WifiEventRow.capture_id == capture_id)
+    ).all()
+    selinux_rows = session.exec(
+        select(SelinuxDenialRow).where(SelinuxDenialRow.capture_id == capture_id)
     ).all()
     battery_rows = session.exec(
         select(BatteryUidStatRow)
@@ -277,6 +289,15 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                 "anomalies": json.loads(packet_analysis_row.anomalies_json),
             } if packet_analysis_row else None
         ),
+        "selinux_denials": [
+            {
+                "timestamp": d.timestamp, "verdict": d.verdict, "permissions": d.permissions,
+                "source_domain": d.source_domain, "target_type": d.target_type,
+                "target_class": d.target_class, "comm": d.comm, "target_name": d.target_name,
+                "app": d.app, "enforcing": d.enforcing,
+                "source": _source(d.source_section, d.source_line_start, d.source_line_end),
+            } for d in selinux_rows
+        ],
         "wifi_events": [
             {
                 "timestamp": w.timestamp, "kind": w.kind, "ssid": w.ssid, "bssid": w.bssid,
@@ -337,6 +358,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
     parse_warnings: list[str] = []
     device_infos = []
     crash_events, tombstones, anrs, wifi_events = [], [], [], []
+    selinux_denials: list[dict] = []
     top_battery_consumers, timeline, media_sessions, focus_stack = [], [], [], []
     bt_hci_summaries, packet_capture_summaries, packet_analyses = [], [], []
     freeze_offenders_by_pkg: dict[str, dict] = {}
@@ -353,6 +375,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
         tombstones.extend(_tag_rows(cap["tombstones"], cid, fname))
         anrs.extend(_tag_rows(cap["anrs"], cid, fname))
         wifi_events.extend(_tag_rows(cap["wifi_events"], cid, fname))
+        selinux_denials.extend(_tag_rows(cap["selinux_denials"], cid, fname))
         top_battery_consumers.extend(_tag_rows(cap["top_battery_consumers"], cid, fname))
         timeline.extend(_tag_rows(cap["timeline"], cid, fname))
         media_sessions.extend(_tag_rows(cap["media_sessions"], cid, fname))
@@ -391,6 +414,7 @@ def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
         "packet_capture_summary": packet_capture_summaries,
         "packet_analysis": packet_analyses,
         "wifi_events": wifi_events,
+        "selinux_denials": selinux_denials,
         "top_battery_consumers": top_battery_consumers[:15],
         "timeline": timeline,
         "media_sessions": media_sessions,

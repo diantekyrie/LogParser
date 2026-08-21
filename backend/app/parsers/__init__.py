@@ -18,6 +18,11 @@ from app.parsers.base import (
 WANTED_SECTIONS = {
     "audio", "package", "media_session", "activity", "system_log",
     "system_properties", "preamble", "wifi", "batterystats", "companiondevice",
+    # SELinux AVC denials are logged by auditd, which writes to the EVENT
+    # LOG buffer, not SYSTEM LOG. Found live: a real capture had 20 denials,
+    # 19 of them here and only 1 in SYSTEM LOG -- parsing only SYSTEM LOG
+    # would have silently missed 95% of them.
+    "event_log",
 }
 
 __all__ = [

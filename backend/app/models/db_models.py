@@ -302,6 +302,30 @@ class CdmPairingEventRow(SQLModel, table=True):
     source_line_end: int
 
 
+class SelinuxDenialRow(SQLModel, table=True):
+    """One parsed SELinux AVC denial. `enforcing` distinguishes a real
+    blocked operation (permissive=0) from a logged-but-allowed one
+    (permissive=1); None means the log line did not say."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True)
+    timestamp: str
+    verdict: str
+    permissions: str                    # space-joined, e.g. "read write"
+    source_context: Optional[str]
+    source_domain: Optional[str] = Field(default=None, index=True)
+    target_context: Optional[str]
+    target_type: Optional[str] = Field(default=None, index=True)
+    target_class: Optional[str]
+    comm: Optional[str]
+    target_name: Optional[str]
+    app: Optional[str] = Field(default=None, index=True)
+    enforcing: Optional[bool]
+    source_section: str
+    source_line_start: int
+    source_line_end: int
+
+
 class CompanionDeviceAssociationRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)

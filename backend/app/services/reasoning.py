@@ -30,6 +30,7 @@ from app.models.db_models import (
     DeviceInfoRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
+    SelinuxDenialRow,
     TombstoneRow,
     WifiEventRow,
 )
@@ -58,6 +59,9 @@ BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.
 PAIRING_TRIGGER_RE = re.compile(
     r"\b(pair(?:ed|ing)?|bond(?:ed|ing)?|bluetooth|\bbt\b|companion|network|connect(?:ed|ion)?)\b",
     re.IGNORECASE,
+)
+SELINUX_TRIGGER_RE = re.compile(
+    r"\b(selinux|sepolicy|avc|denial|denied|permission|policy|audit|blocked)\w*\b", re.IGNORECASE
 )
 
 SYSTEM_PROMPT = """You are a diagnosis-report writer for Android device logs.
@@ -135,6 +139,16 @@ numbers). Rules, no exceptions:
     was taken -- not reconstructed from log messages, so it's the most
     direct answer to "is this device currently paired/connected"
     available in this bundle (check which capture it's tagged with).
+10b. If the bundle includes "device_wide_selinux_evidence", those are
+    SELinux AVC denials. The `enforcing` field is load-bearing and must
+    never be glossed over: `true` means the operation was actually BLOCKED
+    (permissive=0) and something genuinely did not work; `false` means it
+    was logged but ALLOWED through (permissive=1), which is a warning
+    about future enforcement, not a current failure; `null` means the log
+    did not record it. Always say which. Report the enforced count
+    separately from the total. A denial says an operation was blocked --
+    it does NOT by itself establish that any user-visible feature broke,
+    so do not assert a functional impact the bundle does not state.
 11. If the bundle includes a "device_context" object, that's real parsed
     device info (build fingerprint, kernel, security patch, etc.) -- open
     the report with a short "Device" line or table using it verbatim, not
@@ -261,6 +275,7 @@ def build_diagnosis_bundle(
     want_wifi = include_all_evidence or bool(WIFI_TRIGGER_RE.search(question))
     want_battery = include_all_evidence or bool(BATTERY_TRIGGER_RE.search(question))
     want_pairing = include_all_evidence or bool(PAIRING_TRIGGER_RE.search(question))
+    want_selinux = include_all_evidence or bool(SELINUX_TRIGGER_RE.search(question))
 
     claims = []
     for ev in entities:
@@ -445,6 +460,43 @@ def build_diagnosis_bundle(
             ],
         }
 
+    if want_selinux:
+        # An SELinux denial with permissive=0 is a real, already-happened
+        # functional failure: the kernel blocked the operation. permissive=1
+        # means it was logged but allowed. Those are reported as separate
+        # counts rather than one "denials" number, because collapsing them
+        # is the main way SELinux findings get overstated.
+        selinux_confidence, selinux_corroboration = score_confidence(1, captures_checked)
+        denial_rows = session.exec(
+            select(SelinuxDenialRow).where(SelinuxDenialRow.capture_id.in_(sibling_capture_ids))
+        ).all()
+        if denial_rows:
+            enforced = [d for d in denial_rows if d.enforcing is True]
+            bundle["device_wide_selinux_evidence"] = {
+                "note": (
+                    f"Every SELinux AVC denial found across all {captures_checked} capture(s) on "
+                    f"file for this device. `enforcing: true` means the operation was actually "
+                    f"BLOCKED (permissive=0) -- a real failure. `enforcing: false` means it was "
+                    f"logged but allowed through (permissive=1) -- a warning about what would "
+                    f"break under enforcement, not a current failure. `enforcing: null` means the "
+                    f"log line did not record it. Never describe a permissive denial as something "
+                    f"that broke."
+                ),
+                "total_denials": len(denial_rows),
+                "enforced_denials": len(enforced),
+                "denials": [
+                    {"timestamp": d.timestamp, "verdict": d.verdict, "permissions": d.permissions,
+                     "source_domain": d.source_domain, "target_type": d.target_type,
+                     "target_class": d.target_class, "comm": d.comm, "target_name": d.target_name,
+                     "app": d.app, "enforcing": d.enforcing,
+                     "confidence": selinux_confidence, "corroboration": selinux_corroboration,
+                     **_capture_tag(d.capture_id),
+                     "source": {"section": d.source_section, "line_start": d.source_line_start,
+                                "line_end": d.source_line_end}}
+                    for d in denial_rows
+                ],
+            }
+
     if want_pairing:
         # Real gap found live: a "network error while pairing" question
         # between two devices came back "unknown" from two different LLM
@@ -564,6 +616,7 @@ def build_diagnosis_bundle(
         "device_wide_crash_evidence": "crash / ANR / native-crash evidence",
         "device_wide_wifi_evidence": "Wi-Fi disconnection evidence",
         "device_wide_battery_evidence": "battery consumption evidence",
+        "device_wide_selinux_evidence": "SELinux policy denials",
         "device_wide_pairing_evidence": "Bluetooth / Companion Device Manager pairing evidence",
         "bt_hci_summary": "Bluetooth HCI packet log",
         "packet_capture_summary": "packet capture container metadata",
@@ -653,6 +706,21 @@ def rank_findings(bundle: dict) -> list[dict]:
         add("HIGH" if e.get("level") == "E" else "MEDIUM", "pairing",
             f"{e.get('tag')} logged a {'error' if e.get('level') == 'E' else 'warning'}-level anomaly",
             e.get("detail") or "", e)
+
+    selinux = bundle.get("device_wide_selinux_evidence") or {}
+    for d in selinux.get("denials", []):
+        # Enforced (permissive=0) means it was actually blocked -- a real
+        # failure. Permissive denials are logged-but-allowed, so they rank
+        # lower: worth knowing, not currently broken.
+        enforced = d.get("enforcing") is True
+        perms = d.get("permissions") or "?"
+        who = d.get("app") or d.get("comm") or d.get("source_domain") or "unknown"
+        add("HIGH" if enforced else "LOW", "selinux",
+            f"SELinux {'blocked' if enforced else 'logged (permissive)'} "
+            f"{{{perms}}} on {d.get('target_type') or '?'} for {who}",
+            f"{d.get('source_domain')} -> {d.get('target_type')} "
+            f"(class {d.get('target_class')})"
+            + (f", name={d.get('target_name')}" if d.get("target_name") else ""), d)
 
     for bt in (bundle.get("bt_hci_summary") or []):
         for ev in bt.get("notable_events", []):

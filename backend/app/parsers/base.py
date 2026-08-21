@@ -443,6 +443,31 @@ class CdmPairingEvent:
 
 
 @dataclass
+class SelinuxDenial:
+    """One SELinux AVC denial from the system log.
+
+    `enforcing` is the field that decides whether this is a real failure:
+    True (permissive=0) means the operation was actually blocked; False
+    (permissive=1) means it was logged but allowed through anyway. None
+    means the log line didn't say -- reported as unknown, not assumed.
+    """
+
+    timestamp: str
+    verdict: str                        # "denied" | "granted"
+    permissions: list[str]              # e.g. ["read"], ["read", "write"]
+    source_context: Optional[str]       # full u:r:domain:s0:c... string
+    source_domain: Optional[str]        # just the type component, e.g. "platform_app"
+    target_context: Optional[str]
+    target_type: Optional[str]          # e.g. "sysfs"
+    target_class: Optional[str]         # e.g. "file", "dir", "unix_stream_socket"
+    comm: Optional[str]                 # the thread/process name, when logged
+    target_name: Optional[str]          # the object name, when logged
+    app: Optional[str]                  # package, when the line carries app=
+    enforcing: Optional[bool]
+    source_ref: SourceRef
+
+
+@dataclass
 class CompanionDeviceAssociation:
     """One entry from `DUMP OF SERVICE companiondevice`'s "Companion Device
     Associations:" list -- the CDM service's OWN current-state record of a
@@ -487,5 +512,6 @@ class ParsedCapture:
     battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
     cdm_pairing_events: list[CdmPairingEvent] = field(default_factory=list)
     companion_device_associations: list[CompanionDeviceAssociation] = field(default_factory=list)
+    selinux_denials: list[SelinuxDenial] = field(default_factory=list)
     device_info: Optional[DeviceInfo] = None
     parse_warnings: list[str] = field(default_factory=list)

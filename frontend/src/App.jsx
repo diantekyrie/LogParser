@@ -729,6 +729,7 @@ export default function App() {
       tombstones: summary.tombstones.filter((row) => appMatches(row) && timeMatches(row)),
       top_battery_consumers: summary.top_battery_consumers.filter(appMatches),
       wifi_events: summary.wifi_events.filter((row) => matchesQuery(row, appFilter) && timeMatches(row)),
+      selinux_denials: (summary.selinux_denials || []).filter((row) => appMatches(row) && timeMatches(row)),
       top_freeze_offenders: summary.top_freeze_offenders.filter(appMatches),
       media_sessions: summary.media_sessions.filter(appMatches),
       timeline: summary.timeline.filter((row) => (
@@ -888,6 +889,7 @@ export default function App() {
                 <StatCard label="Native crashes" value={c.native_crashes} tone={c.native_crashes > 0 ? "warning" : "ok"} />
                 <StatCard label="ANRs" value={c.anrs} tone={c.anrs > 0 ? "critical" : "ok"} />
                 <StatCard label="Wi-Fi disconnects" value={c.wifi_disconnections} tone={c.wifi_disconnections > 0 ? "warning" : "ok"} />
+                <StatCard label="SELinux blocked" value={c.selinux_enforced_denials ?? 0} tone={(c.selinux_enforced_denials ?? 0) > 0 ? "warning" : "ok"} />
               </div>
             )}
 
@@ -1136,6 +1138,7 @@ export default function App() {
                       <StatCard label="Native crashes (tombstones)" value={c.native_crashes} tone={c.native_crashes > 0 ? "warning" : "ok"} />
                       <StatCard label="ANRs" value={c.anrs} tone={c.anrs > 0 ? "critical" : "ok"} />
                       <StatCard label="Wi-Fi disconnections" value={c.wifi_disconnections} tone="default" />
+                      <StatCard label="SELinux denials" value={c.selinux_denials ?? 0} tone={(c.selinux_enforced_denials ?? 0) > 0 ? "warning" : "default"} />
                       <StatCard label="Freeze events" value={c.freeze_events} tone="default" />
                       <StatCard label="Unfreeze events" value={c.unfreeze_events} tone="default" />
                       <StatCard label="Packages" value={c.packages} tone="default" />
@@ -1203,6 +1206,35 @@ export default function App() {
                               <td>{t.signal_name}{t.signal_code ? ` (${t.signal_code})` : ""}</td>
                               <td className="small">{t.top_frame}</td>
                               <td><CaptureTag filename={t.original_filename} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </section>
+                  )}
+
+                  {filtered.selinux_denials.length > 0 && (
+                    <section className="panel">
+                      <h2>SELinux denials</h2>
+                      <p className="muted small">
+                        <strong>Blocked</strong> means the operation was actually refused (permissive=0) — a real
+                        failure. <strong>Permissive</strong> means it was logged but allowed through, a warning about
+                        what would break under enforcement, not a current failure.
+                      </p>
+                      <table className="fact-table">
+                        <thead><tr><th>Time</th><th>Effect</th><th>Permission</th><th>Domain → target</th><th>Process / app</th><th>Capture</th><th>Cite</th></tr></thead>
+                        <tbody>
+                          {filtered.selinux_denials.map((d, i) => (
+                            <tr key={i}>
+                              <td className="small">{d.timestamp}</td>
+                              <td className={d.enforcing ? "warn-text" : ""}>
+                                {d.enforcing === true ? "blocked" : d.enforcing === false ? "permissive" : "unknown"}
+                              </td>
+                              <td className="small">{d.permissions}</td>
+                              <td className="small">{d.source_domain} → {d.target_type} ({d.target_class})</td>
+                              <td className="small">{d.app || d.comm || ""}</td>
+                              <td><CaptureTag filename={d.original_filename} /></td>
+                              <td><SourceTag source={d.source} /></td>
                             </tr>
                           ))}
                         </tbody>

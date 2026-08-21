@@ -25,6 +25,7 @@ from app.parsers.package_info import parse_packages
 from app.parsers.packet_analysis import analyze_packet_capture
 from app.parsers.pcap import parse_pcap
 from app.parsers.section_extractor import extract_sections, extract_sections_from_text
+from app.parsers.selinux import parse_selinux_denials
 from app.parsers.tombstone import parse_tombstone
 from app.parsers.wifi import parse_wifi_events
 
@@ -166,6 +167,18 @@ def _parse_sections_into_capture(capture: ParsedCapture, sections: dict) -> Pars
         capture.wifi_events = parse_wifi_events(sections["wifi"])
     else:
         capture.parse_warnings.append("No 'wifi' dumpsys section found")
+
+    # AVC denials appear in both buffers -- overwhelmingly EVENT LOG (where
+    # auditd writes) but occasionally SYSTEM LOG too, so both are scanned and
+    # the results concatenated. Each denial keeps its own section in its
+    # SourceRef, so citations stay accurate either way.
+    selinux_denials = []
+    for section_name in ("event_log", "system_log"):
+        if section_name in sections:
+            selinux_denials.extend(parse_selinux_denials(sections[section_name]))
+    capture.selinux_denials = selinux_denials
+    if "event_log" not in sections:
+        capture.parse_warnings.append("No 'EVENT LOG' section found (SELinux denials may be undercounted)")
 
     if "companiondevice" in sections:
         capture.companion_device_associations = parse_companion_device_associations(sections["companiondevice"])
