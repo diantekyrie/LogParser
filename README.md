@@ -1,4 +1,4 @@
-# groundtruth
+# ParseCat
 
 Device log diagnosis SaaS — MVP. Ingests Android bugreports and returns a
 root-cause diagnosis built on **deterministic parsers as ground truth**,

@@ -1,7 +1,7 @@
 """End-to-end pipeline test against the real fixtures: parse -> persist ->
 verify named entities -> multi-capture correlation -> diagnosis bundle.
 
-Uses an in-memory SQLite DB so it doesn't touch the real groundtruth.db.
+Uses an in-memory SQLite DB so it doesn't touch the real parsecat.db.
 Runs the case study from the build brief: does the system independently
 verify the "victim" app's own state, does it find the focus stack without
 hedging, and does a "never requested focus" claim get checked across every

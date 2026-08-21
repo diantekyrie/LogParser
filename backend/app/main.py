@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.db import init_db
 
-app = FastAPI(title="groundtruth", description="Device log diagnosis API")
+app = FastAPI(title="ParseCat", description="Device log diagnosis API")
 
 app.add_middleware(
     CORSMiddleware,

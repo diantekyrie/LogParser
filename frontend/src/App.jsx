@@ -393,7 +393,7 @@ export default function App() {
   function exportInvestigationDiagnosis() {
     if (!invDiagnosis) return;
     const report = [
-      "groundtruth investigation diagnosis export",
+      "ParseCat investigation diagnosis export",
       `investigation: ${investigationLabel}`,
       `captures: ${invDiagnosis.bundle.captures.map((c) => `#${c.capture_id} (${c.device_label})`).join(", ")}`,
       `provider: ${invDiagnosis.provider || "auto"}`,
@@ -407,7 +407,7 @@ export default function App() {
       "verified fact bundle (all captures):",
       JSON.stringify(invDiagnosis.bundle, null, 2),
     ].join("\n");
-    downloadText(`groundtruth-investigation-${investigationLabel}-diagnosis.txt`, report);
+    downloadText(`parsecat-investigation-${investigationLabel}-diagnosis.txt`, report);
   }
 
   const c = summary?.counts;
@@ -434,7 +434,7 @@ export default function App() {
   function exportSummary() {
     if (!summary) return;
     downloadText(
-      `groundtruth-capture-${summary.capture_id}-summary.json`,
+      `parsecat-capture-${summary.capture_id}-summary.json`,
       JSON.stringify(summary, null, 2),
       "application/json",
     );
@@ -443,7 +443,7 @@ export default function App() {
   function exportDiagnosis() {
     if (!diagnosis || !summary) return;
     const report = [
-      "groundtruth diagnosis export",
+      "ParseCat diagnosis export",
       `capture: #${summary.capture_id} ${summary.original_filename}`,
       `provider: ${diagnosis.provider || "auto"}`,
       "",
@@ -456,13 +456,13 @@ export default function App() {
       "verified fact bundle:",
       JSON.stringify(diagnosis.bundle, null, 2),
     ].join("\n");
-    downloadText(`groundtruth-capture-${summary.capture_id}-diagnosis.txt`, report);
+    downloadText(`parsecat-capture-${summary.capture_id}-diagnosis.txt`, report);
   }
 
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">groundtruth</div>
+        <div className="brand">ParseCat</div>
         <div className="tagline">Device log diagnosis, backed by parsed facts, not vibes.</div>
       </header>
 
