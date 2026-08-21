@@ -35,6 +35,26 @@ def _source(section: str, start: int, end: int) -> dict:
     return {"section": section, "line_start": start, "line_end": end}
 
 
+def capture_severity(session: Session, capture_id: int) -> dict:
+    """Cheap counts used to badge a capture in a list (sidebar, investigation
+    picker) before it's actually opened -- not a substitute for the full
+    summary, just enough to answer "does this one need attention."
+    """
+    java_crashes = len(session.exec(select(CrashEventRow).where(CrashEventRow.capture_id == capture_id)).all())
+    native_crashes = len(session.exec(select(TombstoneRow).where(TombstoneRow.capture_id == capture_id)).all())
+    anrs = len(session.exec(select(AnrRow).where(AnrRow.capture_id == capture_id)).all())
+    wifi_disconnects = len(session.exec(
+        select(WifiEventRow).where(WifiEventRow.capture_id == capture_id, WifiEventRow.kind == "disconnection")
+    ).all())
+    return {
+        "java_crashes": java_crashes,
+        "native_crashes": native_crashes,
+        "anrs": anrs,
+        "wifi_disconnects": wifi_disconnects,
+        "has_findings": (java_crashes + native_crashes + anrs + wifi_disconnects) > 0,
+    }
+
+
 def build_capture_summary(session: Session, capture_id: int) -> dict:
     capture = session.get(Capture, capture_id)
     if capture is None:

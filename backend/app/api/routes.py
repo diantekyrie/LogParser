@@ -13,7 +13,7 @@ from app.models.db_models import Capture, Device, Investigation, InvestigationCa
 from app.services.ingestion import parse_capture_file
 from app.services.persistence import persist_capture
 from app.services.reasoning import diagnose, diagnose_investigation
-from app.services.summary import build_capture_summary
+from app.services.summary import build_capture_summary, capture_severity
 
 router = APIRouter()
 
@@ -92,7 +92,7 @@ def list_investigation_captures(investigation_label: str, session: Session = Dep
         .join(InvestigationCaptureLink, InvestigationCaptureLink.capture_id == Capture.id)
         .where(InvestigationCaptureLink.investigation_id == investigation.id)
     ).all()
-    return captures
+    return [{**c.model_dump(), "severity": capture_severity(session, c.id)} for c in captures]
 
 
 @router.get("/devices/{device_label}/captures")
@@ -101,7 +101,7 @@ def list_captures(device_label: str, session: Session = Depends(get_session)):
     if device is None:
         raise HTTPException(404, "Unknown device")
     captures = session.exec(select(Capture).where(Capture.device_id == device.id)).all()
-    return captures
+    return [{**c.model_dump(), "severity": capture_severity(session, c.id)} for c in captures]
 
 
 @router.get("/captures/{capture_id}/summary")
