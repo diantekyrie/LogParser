@@ -53,17 +53,39 @@ backend/
                               the `Subject:` header line alone gives pid,
                               package, and failure reason
       bt_hci.py                parses the on-device Bluetooth HCI snoop log
-                              (FS/data/misc/bluetooth/logs/btsnooz_hci.log)
-                              -- real binary `btsnoop` framing (verified
-                              byte-for-byte against the actual file, not
-                              assumed from the misleading "btsnooz"
-                              filename), decoding connection/disconnection/
-                              command complete/status events with HCI
-                              status-code names from the Bluetooth Core Spec
+                              (a filename that varies by OEM/build -- seen as
+                              "btsnooz_hci.log", "btsnoop_hci.log.filtered",
+                              and rotated ".last" copies of either; see
+                              BT_HCI_LOG_CANDIDATES in ingestion.py) -- real
+                              binary `btsnoop` framing (verified byte-for-
+                              byte against real files, not assumed from any
+                              one filename), decoding connection/
+                              disconnection/command complete/status events
+                              with HCI status-code names from the Bluetooth
+                              Core Spec
       wifi.py                 DUMP OF SERVICE wifi -> WifiController/
                               ClientModeImpl state machine log: Wi-Fi
                               disconnection events with IEEE 802.11 reason
                               codes, BSSID association/roam events
+      cdm_pairing.py           SYSTEM LOG -> Companion Device Manager /
+                              Fast Pair pairing-flow events (discovery,
+                              association, secure-channel handshake), plus
+                              a generic W/E-level catch-all for any other
+                              CDM_*-tagged anomaly
+      companion_device.py      DUMP OF SERVICE companiondevice -> the CDM
+                              service's OWN current-state association
+                              snapshot (paired device, mac, connected now
+                              or not) -- stronger evidence than reconstructing
+                              pairing state from log lines
+      logcat_history.py        FS/data/misc/logd/logcat.NN (persistent,
+                              rotated on-device log buffers, up to 60+ files
+                              per capture) -- reuses the freeze/crash/CDM
+                              parsers above on log history that predates the
+                              live SYSTEM LOG window, deduplicated where the
+                              two genuinely overlap
+      packet_analysis.py       real protocol-level dissection of .pcap/
+                              .pcapng uploads -- see "Packet capture
+                              analysis" below
     services/
       ingestion.py       wires zip -> sections -> parsers -> ParsedCapture;
                           also reads and parses tombstone/ANR files and the
@@ -116,7 +138,7 @@ The local dashboard accepts four upload types:
 |---|---|
 | `.zip` | Full Android bugreport ZIP ingestion, including flattened bugreport text plus ZIP-contained tombstones, ANRs, and Bluetooth HCI log files. |
 | `.txt` | Direct flattened Android bugreport text ingestion. ZIP-only companion files are not available, so tombstones/ANRs/HCI files are reported as unavailable. |
-| `.pcap`, `.pcapng` | Classic libpcap and pcapng container parsing: packet count, byte totals, time range, link type, truncated packet count, and malformed record count. Protocol-level packet decoding is not implemented yet. |
+| `.pcap`, `.pcapng` | Container-level metadata (packet count, byte totals, time range, link type) plus real protocol-level dissection -- see "Packet capture analysis" below. |
 | `.btt` | Accepted as an Ellisys artifact. If the bytes are actually `btsnoop`/HCI, they are parsed by the existing Bluetooth HCI parser; otherwise the upload is kept as a capture with an explicit warning that native Ellisys `.btt` decoding needs a sample/spec or an Ellisys export to btsnoop/pcap. |
 
 Uploads can also be grouped into a named bug folder/investigation so one
@@ -285,6 +307,37 @@ and BSSID association/roam events. The state machine log has dozens of other
 event types (AP capability updates, screen state, scan requests, ...) not
 decoded here since they carry no connectivity-failure signal.
 
+## Packet capture analysis
+
+Two backends, tried in this order, both producing the same `PacketAnalysis`
+shape (frame-type breakdown, retry rate, RSSI range, SSIDs/BSSIDs seen,
+deauth/disassoc/TCP-reset anomalies) so the rest of the system never needs
+to know which one ran -- except the LLM-facing bundle, which is always told
+via a `backend` field so it can be honest about relative completeness:
+
+- **tshark** (subprocess), when `tshark` is on PATH -- full Wireshark
+  dissection, the industry-standard tool for this. Not live-verified in
+  this repo's own dev/test environment (no `tshark` installed there, and
+  installing it requires admin rights that environment doesn't have);
+  verify against a real capture the first time this path actually runs
+  somewhere `tshark` is present.
+- **Fallback**, when it isn't -- NOT generic scapy packet dissection.
+  Benchmarked against a real 297,262-packet 802.11 monitor capture: scapy
+  constructing even a single `RadioTap` layer per packet took >120s;
+  reading the same file with a hand-rolled radiotap/802.11 header parser
+  (same verified-against-real-bytes discipline as `bt_hci.py`) takes ~2s.
+  The hand-rolled RSSI extraction was checked byte-for-byte against
+  scapy's own `RadioTap.dBm_AntSignal` decoding (0 mismatches across 3000
+  real packets) before being trusted for a full-file run. Deauth/disassoc
+  reason codes and TCP retransmission analysis are tshark-only -- the
+  fallback's `note` field says so explicitly on every result rather than
+  silently omitting them. Ethernet/IP-linktype captures (not 802.11
+  monitor mode, which is unusually large because it captures every nearby
+  device's traffic) use real scapy dissection instead, since those
+  captures are typically small enough for scapy's per-packet overhead to
+  be fine, with a packet-count safety cap in case that assumption is wrong
+  for a given file.
+
 ## Explicitly out of scope for this MVP
 
 - Team accounts, SSO, billing tiers.
@@ -295,3 +348,10 @@ decoded here since they carry no connectivity-failure signal.
   which is where connect/disconnect/roam events actually live in a
   bugreport; no driver-level log file was found in the bugreports tested
   against to build a lower-level parser against.
+- Apple `sysdiagnose` (or any non-Android device diagnostic format). This
+  isn't a small gap like a missing filename match -- it's a fundamentally
+  different architecture (Apple's binary Unified Logging `tracev3` format
+  instead of logcat text, `.ips` crash reports instead of Java stack
+  traces/tombstones, no `dumpsys`-equivalent concept at all). Uploading one
+  today fails immediately and loudly (`"No top-level bugreport-*.txt entry
+  found in zip"`) rather than silently returning a bad analysis.

@@ -760,6 +760,64 @@ export default function App() {
                 </section>
               )}
 
+              {summary.packet_analysis && (
+                <section className="panel">
+                  <h2>Packet protocol analysis</h2>
+                  <p className="muted small">
+                    Backend: {summary.packet_analysis.backend}{summary.packet_analysis.backend === "fallback" ? " (tshark not available on the server)" : ""} &middot; {summary.packet_analysis.link_layer} &middot; {summary.packet_analysis.packets_analyzed} packets analyzed
+                  </p>
+                  <div className="stat-grid">
+                    {summary.packet_analysis.retry_rate_pct !== null && (
+                      <StatCard label="Retry rate" value={`${summary.packet_analysis.retry_rate_pct}%`} tone={summary.packet_analysis.retry_rate_pct > 10 ? "warning" : "default"} />
+                    )}
+                    {summary.packet_analysis.rssi_min_dbm !== null && (
+                      <StatCard label="RSSI range (dBm)" value={`${summary.packet_analysis.rssi_min_dbm} to ${summary.packet_analysis.rssi_max_dbm}`} tone="default" />
+                    )}
+                    <StatCard label="Anomalies found" value={summary.packet_analysis.anomalies.length} tone={summary.packet_analysis.anomalies.length > 0 ? "warning" : "ok"} />
+                  </div>
+                  {summary.packet_analysis.frame_type_breakdown.length > 0 && (
+                    <>
+                      <h3>Frame/protocol breakdown</h3>
+                      <table className="fact-table">
+                        <thead><tr><th>Type</th><th>Count</th></tr></thead>
+                        <tbody>
+                          {summary.packet_analysis.frame_type_breakdown.slice(0, 12).map((f, i) => (
+                            <tr key={i}><td>{f.label}</td><td>{f.count}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  {summary.packet_analysis.identity_signals.length > 0 && (
+                    <>
+                      <h3>Identity signals</h3>
+                      <table className="fact-table">
+                        <thead><tr><th>Kind</th><th>Value</th><th>Count</th></tr></thead>
+                        <tbody>
+                          {summary.packet_analysis.identity_signals.slice(0, 15).map((s, i) => (
+                            <tr key={i}><td>{s.kind}</td><td className="small">{s.value}</td><td>{s.count}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  {summary.packet_analysis.anomalies.length > 0 && (
+                    <>
+                      <h3>Anomalies</h3>
+                      <table className="fact-table">
+                        <thead><tr><th>Kind</th><th>Detail</th><th>MAC / IP</th></tr></thead>
+                        <tbody>
+                          {summary.packet_analysis.anomalies.slice(0, 20).map((a, i) => (
+                            <tr key={i}><td className="warn-text">{a.kind.replace(/_/g, " ")}</td><td className="small">{a.detail}</td><td className="small">{a.mac_or_ip}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  <p className="muted small">{summary.packet_analysis.note}</p>
+                </section>
+              )}
+
               {filtered.top_battery_consumers.length > 0 && (
                 <section className="panel">
                   <h2>Top battery consumers</h2>

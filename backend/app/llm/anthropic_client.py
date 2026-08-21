@@ -23,7 +23,12 @@ class AnthropicClient(LLMClient):
     def narrate(self, system_prompt: str, user_prompt: str) -> str:
         response = self._client.messages.create(
             model=self._model,
-            max_tokens=2048,
+            # Bundles now routinely carry CDM pairing events, companiondevice
+            # associations, and packet_analysis all at once (real gap found
+            # live: a genuine investigation-diagnose report was silently cut
+            # off mid-sentence at 2048 tokens once packet_analysis started
+            # adding real content to summarize).
+            max_tokens=8192,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )

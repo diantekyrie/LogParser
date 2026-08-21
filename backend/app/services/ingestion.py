@@ -22,6 +22,7 @@ from app.parsers.freeze_events import parse_freeze_events
 from app.parsers.logcat_history import parse_logcat_history
 from app.parsers.media_session import parse_media_sessions
 from app.parsers.package_info import parse_packages
+from app.parsers.packet_analysis import analyze_packet_capture
 from app.parsers.pcap import parse_pcap
 from app.parsers.section_extractor import extract_sections, extract_sections_from_text
 from app.parsers.tombstone import parse_tombstone
@@ -240,6 +241,18 @@ def parse_bugreport_txt(txt_path: str | Path) -> ParsedCapture:
 def parse_pcap_file(path: str | Path) -> ParsedCapture:
     capture = ParsedCapture()
     capture.packet_capture_summary = parse_pcap(Path(path).read_bytes())
+    try:
+        capture.packet_analysis = analyze_packet_capture(
+            Path(path), capture.packet_capture_summary.linktype
+        )
+    except Exception as exc:  # noqa: BLE001 -- protocol analysis is additive; a
+        # failure here must not lose the container-metadata summary above.
+        capture.parse_warnings.append(f"Packet-level protocol analysis failed: {exc}")
+    if capture.packet_analysis is None and not capture.parse_warnings:
+        capture.parse_warnings.append(
+            f"Packet-level protocol analysis not available for linktype "
+            f"{capture.packet_capture_summary.linktype} ({capture.packet_capture_summary.linktype_name})"
+        )
     return capture
 
 

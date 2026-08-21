@@ -25,6 +25,7 @@ from app.models.db_models import (
     CdmPairingEventRow,
     CompanionDeviceAssociationRow,
     CrashEventRow,
+    PacketAnalysisRow,
     PacketCaptureSummaryRow,
     TombstoneRow,
     WifiEventRow,
@@ -101,11 +102,18 @@ numbers). Rules, no exceptions:
    pairing flow. A "kind":"anomaly" entry means only that the log level
    (W/E) flagged it, not that its `detail` text has been independently
    interpreted -- quote the detail rather than paraphrasing a cause into
-   it. If the bundle also includes "bt_hci_summary" or
-   "packet_capture_summary", those are supporting evidence (HCI event
-   counts, or raw packet-capture metadata) -- packet_capture_summary in
-   particular cannot identify what a network error was, only that a
-   capture exists; say so if asked to characterize the error itself. If
+   it. If the bundle also includes "bt_hci_summary", "packet_capture_summary",
+   or "packet_analysis", those are supporting evidence. packet_capture_summary
+   is container-level metadata only (packet count/time range) and cannot by
+   itself identify what happened. packet_analysis is real protocol-level
+   dissection -- its "backend" field says whether it came from full tshark
+   dissection or the narrower hand-rolled fallback (see its own "note" field
+   for exactly what that backend does and doesn't cover, e.g. the fallback
+   backend does not decode deauth/disassoc reason codes or detect TCP
+   retransmissions -- never state a reason code or retransmission fact unless
+   packet_analysis actually contains one). Frame counts, RSSI range, retry
+   rate, SSIDs/BSSIDs, and any listed anomalies in packet_analysis are real
+   per-packet facts, not inferred. If
    "device_wide_pairing_evidence" includes a "current_associations" list,
    that's the CDM service's OWN current-state record of each paired
    device at the moment the bugreport was taken -- not reconstructed from
@@ -385,11 +393,22 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
                 "format": pcap_row.format, "linktype_name": pcap_row.linktype_name,
                 "total_packets": pcap_row.total_packets, "first_timestamp": pcap_row.first_timestamp,
                 "last_timestamp": pcap_row.last_timestamp,
-                "note": (
-                    "Packet-count/byte/time-range metadata only -- no protocol-level decoding of "
-                    "packet contents is implemented, so this cannot by itself identify what a "
-                    "network error was, only that a capture exists covering this time range."
-                ),
+                "note": "Container-level metadata only -- see packet_analysis for protocol-level facts.",
+            }
+        pa_row = session.exec(
+            select(PacketAnalysisRow).where(PacketAnalysisRow.capture_id == capture_id)
+        ).first()
+        if pa_row:
+            bundle["packet_analysis"] = {
+                "backend": pa_row.backend, "link_layer": pa_row.link_layer,
+                "packets_analyzed": pa_row.packets_analyzed,
+                "retry_count": pa_row.retry_count, "retry_rate_pct": pa_row.retry_rate_pct,
+                "rssi_min_dbm": pa_row.rssi_min_dbm, "rssi_max_dbm": pa_row.rssi_max_dbm,
+                "rssi_avg_dbm": pa_row.rssi_avg_dbm,
+                "frame_type_breakdown": json.loads(pa_row.frame_type_breakdown_json),
+                "identity_signals": json.loads(pa_row.identity_signals_json),
+                "anomalies": json.loads(pa_row.anomalies_json),
+                "note": pa_row.note,
             }
 
     return bundle

@@ -24,6 +24,7 @@ from app.models.db_models import (
     FreezeSummaryRow,
     MediaSessionRow,
     PackageFactRow,
+    PacketAnalysisRow,
     PacketCaptureSummaryRow,
     TombstoneRow,
     WifiEventRow,
@@ -101,6 +102,9 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
     ).first()
     packet_summary_row = session.exec(
         select(PacketCaptureSummaryRow).where(PacketCaptureSummaryRow.capture_id == capture_id)
+    ).first()
+    packet_analysis_row = session.exec(
+        select(PacketAnalysisRow).where(PacketAnalysisRow.capture_id == capture_id)
     ).first()
     bt_event_rows = session.exec(
         select(BtHciEventRow).where(BtHciEventRow.capture_id == capture_id)
@@ -236,6 +240,22 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
                 "truncated_packets": packet_summary_row.truncated_packets,
                 "malformed_packets": packet_summary_row.malformed_packets,
             } if packet_summary_row else None
+        ),
+        "packet_analysis": (
+            {
+                "backend": packet_analysis_row.backend,
+                "link_layer": packet_analysis_row.link_layer,
+                "packets_analyzed": packet_analysis_row.packets_analyzed,
+                "retry_count": packet_analysis_row.retry_count,
+                "retry_rate_pct": packet_analysis_row.retry_rate_pct,
+                "rssi_min_dbm": packet_analysis_row.rssi_min_dbm,
+                "rssi_max_dbm": packet_analysis_row.rssi_max_dbm,
+                "rssi_avg_dbm": packet_analysis_row.rssi_avg_dbm,
+                "note": packet_analysis_row.note,
+                "frame_type_breakdown": json.loads(packet_analysis_row.frame_type_breakdown_json),
+                "identity_signals": json.loads(packet_analysis_row.identity_signals_json),
+                "anomalies": json.loads(packet_analysis_row.anomalies_json),
+            } if packet_analysis_row else None
         ),
         "wifi_events": [
             {

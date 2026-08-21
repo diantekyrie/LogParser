@@ -47,7 +47,9 @@ class OpenAIClient(LLMClient):
 
         response = self._client.chat.completions.create(
             model=self._model,
-            max_tokens=2048,
+            # See anthropic_client.py -- same real truncation found live once
+            # bundles routinely carry CDM + companiondevice + packet_analysis together.
+            max_tokens=8192,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

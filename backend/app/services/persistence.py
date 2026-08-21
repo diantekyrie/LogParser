@@ -29,6 +29,7 @@ from app.models.db_models import (
     InvestigationCaptureLink,
     MediaSessionRow,
     PackageFactRow,
+    PacketAnalysisRow,
     PacketCaptureSummaryRow,
     TombstoneRow,
     WifiEventRow,
@@ -213,6 +214,21 @@ def persist_capture(
             captured_bytes=p.captured_bytes, original_bytes=p.original_bytes,
             first_timestamp=p.first_timestamp, last_timestamp=p.last_timestamp,
             truncated_packets=p.truncated_packets, malformed_packets=p.malformed_packets,
+        ))
+
+    if parsed.packet_analysis is not None:
+        pa = parsed.packet_analysis
+        session.add(PacketAnalysisRow(
+            capture_id=capture.id, backend=pa.backend, packets_analyzed=pa.packets_analyzed,
+            link_layer=pa.link_layer, retry_count=pa.retry_count, retry_rate_pct=pa.retry_rate_pct,
+            rssi_min_dbm=pa.rssi_min_dbm, rssi_max_dbm=pa.rssi_max_dbm, rssi_avg_dbm=pa.rssi_avg_dbm,
+            note=pa.note,
+            frame_type_breakdown_json=json.dumps([{"label": f.label, "count": f.count} for f in pa.frame_type_breakdown]),
+            identity_signals_json=json.dumps([{"kind": s.kind, "value": s.value, "count": s.count} for s in pa.identity_signals]),
+            anomalies_json=json.dumps([
+                {"timestamp": a.timestamp, "kind": a.kind, "detail": a.detail, "mac_or_ip": a.mac_or_ip}
+                for a in pa.anomalies
+            ]),
         ))
 
     for w in parsed.wifi_events:

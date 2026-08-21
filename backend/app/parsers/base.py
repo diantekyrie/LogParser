@@ -284,6 +284,80 @@ class PacketCaptureSummary:
 
 
 @dataclass
+class PacketFrameTypeStat:
+    """One row of a frame-type / protocol breakdown -- e.g. ("Beacon", 17261)
+    for 802.11, or ("DNS", 42) for an Ethernet/IP capture."""
+
+    label: str
+    count: int
+
+
+@dataclass
+class PacketIdentitySignal:
+    """One identifying value observed in the capture -- an SSID, BSSID, DNS
+    query name, or similar -- with how many packets carried it."""
+
+    kind: str    # "ssid" | "bssid" | "dns_query"
+    value: str
+    count: int
+
+
+@dataclass
+class PacketAnomalyEvent:
+    """One notable event found in the capture -- a deauth/disassoc frame,
+    a TCP reset, etc. Not exhaustive; see PacketAnalysis.note for what this
+    backend does and doesn't detect."""
+
+    timestamp: Optional[str]
+    kind: str    # "deauthentication" | "disassociation" | "tcp_reset"
+    detail: str
+    mac_or_ip: Optional[str] = None
+
+
+@dataclass
+class PacketAnalysis:
+    """Real protocol-level analysis of a packet capture -- contrast with
+    PacketCaptureSummary, which is container-level metadata only (packet
+    count/bytes/time range, no look inside a single packet).
+
+    Two backends can produce this, and `backend` says which one actually
+    ran so the LLM-facing bundle can be honest about relative completeness
+    (see reasoning.py) rather than presenting both as equally authoritative:
+
+    - "tshark": full Wireshark dissection via a `tshark` subprocess. Not
+      live-verified in THIS codebase's dev/test environment (tshark isn't
+      installed there) -- verify against a real capture the first time
+      this path actually runs somewhere tshark is present, the same way
+      every other parser here was verified against real bytes.
+    - "fallback": a from-scratch parser with no external tool or library
+      dissection dependency, written after finding that scapy's own
+      general-purpose packet dissection is far too slow for a real
+      monitor-mode capture (297,262 packets took >120s to even construct
+      RadioTap objects one at a time; the hand-rolled radiotap/802.11
+      header parser used instead does the same file in ~2s). Verified
+      byte-for-byte against scapy's own RadioTap.dBm_AntSignal decoding
+      on a real capture (0 mismatches across 3000 packets) before being
+      trusted for the full run. Retransmission/TCP-stream analysis is
+      NOT attempted in this backend -- that needs tshark's own
+      stream-tracking, so retransmission counts are tshark-only; see
+      `note` for what's missing on a given result.
+    """
+
+    backend: str
+    packets_analyzed: int
+    link_layer: str    # "802.11" | "ethernet" | "unknown"
+    frame_type_breakdown: list[PacketFrameTypeStat]
+    retry_count: Optional[int]          # 802.11 only
+    retry_rate_pct: Optional[float]     # 802.11 only
+    rssi_min_dbm: Optional[int]
+    rssi_max_dbm: Optional[int]
+    rssi_avg_dbm: Optional[float]
+    identity_signals: list[PacketIdentitySignal]
+    anomalies: list[PacketAnomalyEvent]
+    note: str
+
+
+@dataclass
 class WifiEvent:
     """One decoded event from `DUMP OF SERVICE wifi` -> WifiController's
     state-machine transition log (`rec[N]: time=... what=EVENT_NAME ...`).
@@ -408,6 +482,7 @@ class ParsedCapture:
     anrs: list[AnrFacts] = field(default_factory=list)
     bt_hci_summary: Optional[BtHciSummary] = None
     packet_capture_summary: Optional[PacketCaptureSummary] = None
+    packet_analysis: Optional[PacketAnalysis] = None
     wifi_events: list[WifiEvent] = field(default_factory=list)
     battery_uid_stats: list[BatteryUidStats] = field(default_factory=list)
     cdm_pairing_events: list[CdmPairingEvent] = field(default_factory=list)

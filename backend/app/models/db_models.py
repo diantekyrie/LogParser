@@ -246,6 +246,28 @@ class PacketCaptureSummaryRow(SQLModel, table=True):
     malformed_packets: int
 
 
+class PacketAnalysisRow(SQLModel, table=True):
+    """One row per direct packet-capture upload's protocol-level analysis
+    (contrast with PacketCaptureSummaryRow, which is container metadata
+    only). Nested lists are stored as JSON -- same pattern as
+    components_mah_json on BatteryUidStatRow."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    capture_id: int = Field(foreign_key="capture.id", index=True, unique=True)
+    backend: str
+    packets_analyzed: int
+    link_layer: str
+    retry_count: Optional[int]
+    retry_rate_pct: Optional[float]
+    rssi_min_dbm: Optional[int]
+    rssi_max_dbm: Optional[int]
+    rssi_avg_dbm: Optional[float]
+    note: str
+    frame_type_breakdown_json: str
+    identity_signals_json: str
+    anomalies_json: str
+
+
 class BatteryUidStatRow(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     capture_id: int = Field(foreign_key="capture.id", index=True)
