@@ -58,6 +58,94 @@ function packageLike(row) {
   return row?.package ?? row?.executable ?? row?.uid_token ?? row?.label ?? "";
 }
 
+// The LLM report now follows a fixed markdown structure (SYSTEM_PROMPT
+// rule 13: ## headings, bullet/numbered lists, **bold**, `code`). This
+// renders that small, controlled subset as real elements instead of
+// showing literal "##"/"**" characters in a <pre> block -- no markdown
+// library, since the format the LLM is instructed to use is narrow and
+// fully known ahead of time.
+function renderInline(text, keyPrefix) {
+  const parts = [];
+  const regex = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let lastIndex = 0;
+  let match;
+  let i = 0;
+  while ((match = regex.exec(text))) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    if (token.startsWith("**")) {
+      parts.push(<strong key={`${keyPrefix}-${i++}`}>{token.slice(2, -2)}</strong>);
+    } else {
+      parts.push(<code key={`${keyPrefix}-${i++}`} className="inline-code">{token.slice(1, -1)}</code>);
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts;
+}
+
+function renderMarkdown(text) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  const blocks = [];
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^#{2,4}\s+/.test(line)) {
+      const Tag = line.startsWith("### ") || line.startsWith("#### ") ? "h4" : "h3";
+      const content = line.replace(/^#{2,4}\s+/, "");
+      blocks.push(<Tag key={key} className="report-heading">{renderInline(content, key)}</Tag>);
+      key += 1;
+      i += 1;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={key} className="report-list">
+          {items.map((it, idx) => <li key={idx}>{renderInline(it, `${key}-${idx}`)}</li>)}
+        </ul>
+      );
+      key += 1;
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ol key={key} className="report-list">
+          {items.map((it, idx) => <li key={idx}>{renderInline(it, `${key}-${idx}`)}</li>)}
+        </ol>
+      );
+      key += 1;
+      continue;
+    }
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+    const paraLines = [];
+    while (
+      i < lines.length && lines[i].trim() !== ""
+      && !/^#{2,4}\s+/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])
+    ) {
+      paraLines.push(lines[i]);
+      i += 1;
+    }
+    blocks.push(<p key={key} className="report-para">{renderInline(paraLines.join(" "), key)}</p>);
+    key += 1;
+  }
+  return blocks;
+}
+
 function SourceTag({ source }) {
   if (!source) return null;
   return (
@@ -248,11 +336,15 @@ export default function App() {
   const [diagnosisByCapture, setDiagnosisByCapture] = useState({});
   const diagnosis = selectedCaptureId != null ? diagnosisByCapture[selectedCaptureId] ?? null : null;
   const [diagnosing, setDiagnosing] = useState(false);
+  const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [followUpBusy, setFollowUpBusy] = useState(false);
   const [providers, setProviders] = useState([]);
   const [provider, setProvider] = useState("");
   const [invQuestion, setInvQuestion] = useState("");
   const [invDiagnosis, setInvDiagnosis] = useState(null);
   const [invDiagnosing, setInvDiagnosing] = useState(false);
+  const [invFollowUpQuestion, setInvFollowUpQuestion] = useState("");
+  const [invFollowUpBusy, setInvFollowUpBusy] = useState(false);
   const [appFilter, setAppFilter] = useState("");
   const [timelineFilter, setTimelineFilter] = useState("");
   const [incidentTime, setIncidentTime] = useState("");
@@ -417,10 +509,58 @@ export default function App() {
       if (provider) form.append("provider", provider);
       const data = await api(`/captures/${captureId}/diagnose`, { method: "POST", body: form });
       setDiagnosisByCapture((prev) => ({ ...prev, [captureId]: data }));
+      setFollowUpQuestion("");
     } catch (err) {
       setError(String(err));
     } finally {
       setDiagnosing(false);
+    }
+  }
+
+  // Follow-up questions reuse this capture's fresh fact bundle (built the
+  // same way as any other question -- see build_diagnosis_bundle) but tell
+  // the LLM about prior turns for continuity, so "what about the other
+  // one?" resolves without the user re-stating context. Prior turns are
+  // never treated as evidence themselves (SYSTEM_PROMPT rule 14) -- every
+  // claim in the follow-up's answer still has to trace back to this turn's
+  // own verified bundle.
+  async function handleFollowUp(e) {
+    e.preventDefault();
+    if (!selectedCaptureId || !followUpQuestion || !diagnosis) return;
+    const captureId = selectedCaptureId;
+    const priorTurns = [
+      { question: diagnosis.bundle.question, report: diagnosis.report },
+      ...(diagnosis.followUps || []),
+    ];
+    const askedQuestion = followUpQuestion;
+    setFollowUpBusy(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("question", askedQuestion);
+      if (provider) form.append("provider", provider);
+      form.append("history", JSON.stringify(priorTurns));
+      const data = await api(`/captures/${captureId}/diagnose`, { method: "POST", body: form });
+      setDiagnosisByCapture((prev) => {
+        const existing = prev[captureId];
+        if (!existing) return prev; // the base diagnosis was cleared while this was in flight
+        return {
+          ...prev,
+          [captureId]: {
+            ...existing,
+            followUps: [
+              ...(existing.followUps || []),
+              { question: askedQuestion, report: data.report, llm_error: data.llm_error,
+                provider: data.provider, bundle: data.bundle },
+            ],
+          },
+        };
+      });
+      setFollowUpQuestion("");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setFollowUpBusy(false);
     }
   }
 
@@ -439,6 +579,7 @@ export default function App() {
         { method: "POST", body: form },
       );
       setInvDiagnosis(data);
+      setInvFollowUpQuestion("");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -446,8 +587,46 @@ export default function App() {
     }
   }
 
+  async function handleInvFollowUp(e) {
+    e.preventDefault();
+    if (!investigationLabel.trim() || !invFollowUpQuestion || !invDiagnosis) return;
+    const label = investigationLabel.trim();
+    const priorTurns = [
+      { question: invDiagnosis.bundle.question, report: invDiagnosis.report },
+      ...(invDiagnosis.followUps || []),
+    ];
+    const askedQuestion = invFollowUpQuestion;
+    setInvFollowUpBusy(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("question", askedQuestion);
+      if (provider) form.append("provider", provider);
+      form.append("history", JSON.stringify(priorTurns));
+      const data = await api(`/investigations/${encodeURIComponent(label)}/diagnose`, { method: "POST", body: form });
+      setInvDiagnosis((existing) => (existing ? {
+        ...existing,
+        followUps: [
+          ...(existing.followUps || []),
+          { question: askedQuestion, report: data.report, llm_error: data.llm_error,
+            provider: data.provider, bundle: data.bundle },
+        ],
+      } : existing));
+      setInvFollowUpQuestion("");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setInvFollowUpBusy(false);
+    }
+  }
+
   function exportInvestigationDiagnosis() {
     if (!invDiagnosis) return;
+    const followUpText = (invDiagnosis.followUps || []).map((turn, i) => [
+      "",
+      `follow-up ${i + 1}: ${turn.question}`,
+      turn.report || `LLM narration failed: ${turn.llm_error}`,
+    ].join("\n")).join("\n");
     const report = [
       "ParseCat investigation diagnosis export",
       `investigation: ${investigationLabel}`,
@@ -459,6 +638,7 @@ export default function App() {
       "",
       "report:",
       invDiagnosis.report || `LLM narration failed: ${invDiagnosis.llm_error}`,
+      followUpText,
       "",
       "verified fact bundle (all captures):",
       JSON.stringify(invDiagnosis.bundle, null, 2),
@@ -501,6 +681,11 @@ export default function App() {
   function exportDiagnosis() {
     if (!diagnosis || !selectedCaptureId) return;
     const targetCapture = captures.find((cap) => cap.id === selectedCaptureId);
+    const followUpText = (diagnosis.followUps || []).map((turn, i) => [
+      "",
+      `follow-up ${i + 1}: ${turn.question}`,
+      turn.report || `LLM narration failed: ${turn.llm_error}`,
+    ].join("\n")).join("\n");
     const report = [
       "ParseCat diagnosis export",
       `capture: #${selectedCaptureId}${targetCapture ? ` ${targetCapture.original_filename}` : ""}`,
@@ -511,6 +696,7 @@ export default function App() {
       "",
       "report:",
       diagnosis.report || `LLM narration failed: ${diagnosis.llm_error}`,
+      followUpText,
       "",
       "verified fact bundle:",
       JSON.stringify(diagnosis.bundle, null, 2),
@@ -674,9 +860,37 @@ export default function App() {
                     <h3>Report {diagnosis.provider && <span className="muted small"> - narrated by {providers.find((p) => p.id === diagnosis.provider)?.label || diagnosis.provider}</span>}</h3>
                     <button type="button" className="secondary-btn" onClick={exportDiagnosis}>Export diagnosis</button>
                     {diagnosis.report ? (
-                      <pre className="report">{diagnosis.report}</pre>
+                      <div className="report">{renderMarkdown(diagnosis.report)}</div>
                     ) : (
                       <div className="error">LLM narration failed (facts above are unaffected): {diagnosis.llm_error}</div>
+                    )}
+
+                    {(diagnosis.followUps || []).map((turn, i) => (
+                      <div className="follow-up-turn" key={i}>
+                        <h3>Follow-up: {turn.question}</h3>
+                        {turn.report ? (
+                          <div className="report">{renderMarkdown(turn.report)}</div>
+                        ) : (
+                          <div className="error">LLM narration failed: {turn.llm_error}</div>
+                        )}
+                      </div>
+                    ))}
+
+                    {diagnosis.report && (
+                      <form onSubmit={handleFollowUp} className="follow-up-form">
+                        <label>
+                          Follow-up question
+                          <input
+                            type="text"
+                            placeholder="e.g. Should I be worried about that?"
+                            value={followUpQuestion}
+                            onChange={(e) => setFollowUpQuestion(e.target.value)}
+                          />
+                        </label>
+                        <button type="submit" disabled={followUpBusy || !followUpQuestion}>
+                          {followUpBusy ? "Asking…" : "Ask follow-up"}
+                        </button>
+                      </form>
                     )}
                   </div>
                 )}
@@ -733,9 +947,37 @@ export default function App() {
                     </h3>
                     <button type="button" className="secondary-btn" onClick={exportInvestigationDiagnosis}>Export diagnosis</button>
                     {invDiagnosis.report ? (
-                      <pre className="report">{invDiagnosis.report}</pre>
+                      <div className="report">{renderMarkdown(invDiagnosis.report)}</div>
                     ) : (
                       <div className="error">LLM narration failed (facts above are unaffected): {invDiagnosis.llm_error}</div>
+                    )}
+
+                    {(invDiagnosis.followUps || []).map((turn, i) => (
+                      <div className="follow-up-turn" key={i}>
+                        <h3>Follow-up: {turn.question}</h3>
+                        {turn.report ? (
+                          <div className="report">{renderMarkdown(turn.report)}</div>
+                        ) : (
+                          <div className="error">LLM narration failed: {turn.llm_error}</div>
+                        )}
+                      </div>
+                    ))}
+
+                    {invDiagnosis.report && (
+                      <form onSubmit={handleInvFollowUp} className="follow-up-form">
+                        <label>
+                          Follow-up question
+                          <input
+                            type="text"
+                            placeholder="e.g. Which device should I focus on fixing first?"
+                            value={invFollowUpQuestion}
+                            onChange={(e) => setInvFollowUpQuestion(e.target.value)}
+                          />
+                        </label>
+                        <button type="submit" disabled={invFollowUpBusy || !invFollowUpQuestion}>
+                          {invFollowUpBusy ? "Asking…" : "Ask follow-up"}
+                        </button>
+                      </form>
                     )}
                   </div>
                 )}
@@ -1193,7 +1435,17 @@ export default function App() {
         .badge { color: #10131a; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 10px; }
         .device-badge { background: var(--blue); color: #061019; }
         .history { margin-top: 8px; font-size: 12px; background: #10151f; padding: 8px; border-radius: 6px; color: var(--muted); }
-        .report { white-space: pre-wrap; background: #0e1420; padding: 12px; border-radius: 6px; font-size: 13px; max-height: 420px; overflow: auto; border: 1px solid var(--panel-border); }
+        .report { background: #0e1420; padding: 14px 16px; border-radius: 6px; font-size: 13px; max-height: 480px; overflow: auto; border: 1px solid var(--panel-border); line-height: 1.55; }
+        .report-heading { margin: 16px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
+        .report-heading:first-child { margin-top: 0; }
+        .report-para { margin: 0 0 10px; color: var(--text); }
+        .report-list { margin: 0 0 10px; padding-left: 20px; }
+        .report-list li { margin-bottom: 4px; }
+        .inline-code { background: #1a2337; color: var(--blue); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
+        .follow-up-turn { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--panel-border); }
+        .follow-up-form { display: flex; align-items: flex-end; gap: 12px; margin-top: 16px; }
+        .follow-up-form label { flex: 1; margin-bottom: 0; }
+        .follow-up-form input { margin-top: 6px; }
         @media (max-width: 900px) {
           .layout { grid-template-columns: 1fr; }
           .sidebar, .triage-panel, .tabbar { position: static; }

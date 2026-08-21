@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -18,6 +19,21 @@ from app.services.summary import build_capture_summary, build_merged_summary, ca
 router = APIRouter()
 
 SUPPORTED_UPLOAD_SUFFIXES = {".zip", ".txt", ".pcap", ".pcapng"}
+
+
+def _parse_history(raw: str | None) -> list[dict] | None:
+    """The `history` form field is a JSON-encoded list of prior
+    {question, report} turns from the same follow-up thread -- see
+    reasoning.py's _format_history(). Malformed/absent input degrades to
+    "no history" rather than a 400, since history is for conversational
+    continuity only, never a source of facts (SYSTEM_PROMPT rule 14)."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 @router.post("/captures")
@@ -141,6 +157,7 @@ def diagnose_capture(
     capture_id: int,
     question: str = Form(...),
     provider: str | None = Form(None),
+    history: str | None = Form(None),
     session: Session = Depends(get_session),
 ):
     capture = session.get(Capture, capture_id)
@@ -148,7 +165,10 @@ def diagnose_capture(
         raise HTTPException(404, "Unknown capture")
     device = session.get(Device, capture.device_id)
 
-    result = diagnose(session, capture_id, device.label, question, provider=provider)
+    result = diagnose(
+        session, capture_id, device.label, question,
+        provider=provider, history=_parse_history(history),
+    )
     return result
 
 
@@ -157,6 +177,7 @@ def diagnose_investigation_route(
     investigation_label: str,
     question: str = Form(...),
     provider: str | None = Form(None),
+    history: str | None = Form(None),
     session: Session = Depends(get_session),
 ):
     investigation = session.exec(
@@ -165,5 +186,8 @@ def diagnose_investigation_route(
     if investigation is None:
         raise HTTPException(404, "Unknown investigation")
 
-    result = diagnose_investigation(session, investigation.id, question, provider=provider)
+    result = diagnose_investigation(
+        session, investigation.id, question,
+        provider=provider, history=_parse_history(history),
+    )
     return result

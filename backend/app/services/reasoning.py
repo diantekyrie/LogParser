@@ -27,6 +27,7 @@ from app.models.db_models import (
     CompanionDeviceAssociationRow,
     CrashEventRow,
     Device,
+    DeviceInfoRow,
     PacketAnalysisRow,
     PacketCaptureSummaryRow,
     TombstoneRow,
@@ -134,6 +135,45 @@ numbers). Rules, no exceptions:
     was taken -- not reconstructed from log messages, so it's the most
     direct answer to "is this device currently paired/connected"
     available in this bundle (check which capture it's tagged with).
+11. If the bundle includes a "device_context" object, that's real parsed
+    device info (build fingerprint, kernel, security patch, etc.) -- open
+    the report with a short "Device" line or table using it verbatim, not
+    reformatted or guessed at. Never invent a device-context field that
+    isn't present.
+12. If the bundle includes an "evidence_sources" list, that's a
+    deterministic, code-generated record of which evidence categories were
+    actually checked for this question (not written by you) -- include it
+    near the end of the report as a short "Evidence checked" list so the
+    reader can see what was and wasn't looked at, using its "category" and
+    "detail" fields verbatim.
+13. Structure every report with these sections, in this order, using
+    markdown headings (##):
+    - "## Direct answer" -- 1-3 sentences answering the literal question
+      first, before any supporting detail.
+    - "## Findings" -- the verified facts, organized by category (named
+      app claims, crash/ANR, Wi-Fi, battery, pairing, packet analysis --
+      whichever are actually present in the bundle), each finding stating
+      its confidence label verbatim (rule 2) and citing section/line
+      (rule 4) and capture (rule 6) as established above.
+    - "## Suggested next steps" -- OPTIONAL, only include if there's
+      something genuinely actionable to suggest. This section is your own
+      general troubleshooting knowledge, NOT verified facts from the
+      capture -- head it explicitly with the sentence "These are general
+      troubleshooting suggestions based on the findings above, not
+      additional verified facts from this capture." Never state a
+      confidence label on anything in this section, and never phrase a
+      suggestion as something the bundle confirmed.
+    - "## Evidence checked" -- render the evidence_sources list per rule 12,
+      if present.
+    Keep the whole report proportional to how much the bundle actually
+    contains -- an empty bundle deserves a few honest sentences, not
+    padded-out empty sections.
+14. If the user prompt includes a "Prior conversation in this session"
+    block, that's earlier turns of the SAME conversation, given for
+    continuity only (e.g. so "what about the other one?" can be
+    understood) -- it is NEVER itself evidence. Every factual claim in
+    your report must still trace back to the JSON fact bundle for THIS
+    turn, per rule 1, even when answering a follow-up.
 """
 
 
@@ -216,6 +256,31 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
         "entities_independently_verified": [c["package"] for c in claims],
         "claims": claims,
     }
+
+    # Deterministic, not LLM-generated -- straight from DeviceInfoRow, so
+    # there's no invention risk in giving the report the same device
+    # context table a human analyst would want up front (build fingerprint,
+    # kernel, security patch, etc.) rather than making the LLM guess at or
+    # omit it.
+    device_info_row = session.exec(
+        select(DeviceInfoRow).where(DeviceInfoRow.capture_id == capture_id)
+    ).first()
+    if device_info_row:
+        bundle["device_context"] = {
+            k: v for k, v in device_info_row.__dict__.items()
+            if not k.startswith("_") and k not in ("id", "capture_id")
+        }
+
+    # Process-transparency list: which evidence categories were actually
+    # checked for this question and why, computed here (not by the LLM) as
+    # each block below is populated -- an honest, cheap substitute for a
+    # genuine multi-step research trace, which this system doesn't run.
+    evidence_sources: list[dict] = []
+    if claims:
+        evidence_sources.append({
+            "category": "named app verification", "reason": "app(s) named in the question",
+            "detail": f"{len(claims)} app(s) independently verified: {', '.join(c['package'] for c in claims)}",
+        })
 
     # Real gap found live: "device-wide" evidence (crash/wifi/battery/
     # pairing, below) was actually scoped to just the ONE capture_id passed
@@ -472,11 +537,53 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
                 for pa_row in pa_rows
             ]
 
+    _EVIDENCE_LABELS = {
+        "device_wide_crash_evidence": "crash / ANR / native-crash evidence",
+        "device_wide_wifi_evidence": "Wi-Fi disconnection evidence",
+        "device_wide_battery_evidence": "battery consumption evidence",
+        "device_wide_pairing_evidence": "Bluetooth / Companion Device Manager pairing evidence",
+        "bt_hci_summary": "Bluetooth HCI packet log",
+        "packet_capture_summary": "packet capture container metadata",
+        "packet_analysis": "packet capture protocol-level analysis",
+    }
+    for key, label in _EVIDENCE_LABELS.items():
+        if bundle.get(key):
+            evidence_sources.append({
+                "category": label,
+                "reason": "question matched a keyword trigger for this evidence category",
+                "detail": f"checked across {captures_checked} capture(s) on file for this device",
+            })
+    bundle["evidence_sources"] = evidence_sources
+
     return bundle
 
 
-def _run_llm(bundle: dict, system_prompt: str, provider: str | None) -> tuple[str | None, str | None]:
+def _format_history(history: list[dict] | None) -> str:
+    """Prior turns of the same conversation, for continuity only -- see
+    SYSTEM_PROMPT rule 14. Each item is {"question": str, "report": str};
+    items missing either (e.g. a turn where narration failed) are skipped
+    rather than injecting an empty/garbled turn.
+    """
+    if not history:
+        return ""
+    turns = [
+        f"Q: {h['question']}\nA: {h['report']}"
+        for h in history if h.get("question") and h.get("report")
+    ]
+    if not turns:
+        return ""
+    return (
+        "Prior conversation in this session (for continuity only -- NOT new "
+        "evidence; the verified fact bundle below is still the only source "
+        "of facts for this turn):\n\n" + "\n\n".join(turns) + "\n\n"
+    )
+
+
+def _run_llm(
+    bundle: dict, system_prompt: str, provider: str | None, history: list[dict] | None = None,
+) -> tuple[str | None, str | None]:
     user_prompt = (
+        _format_history(history) +
         "Verified fact bundle (JSON):\n\n" + json.dumps(bundle, indent=2, default=str) +
         "\n\nWrite a diagnosis report answering the question above using only these facts."
     )
@@ -493,15 +600,15 @@ def _run_llm(bundle: dict, system_prompt: str, provider: str | None) -> tuple[st
 
 def diagnose(
     session: Session, capture_id: int, device_label: str, question: str,
-    provider: str | None = None,
+    provider: str | None = None, history: list[dict] | None = None,
 ) -> dict:
     bundle = build_diagnosis_bundle(session, capture_id, device_label, question)
-    report_text, llm_error = _run_llm(bundle, SYSTEM_PROMPT, provider)
+    report_text, llm_error = _run_llm(bundle, SYSTEM_PROMPT, provider, history)
     return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}
 
 
 INVESTIGATION_SYSTEM_PROMPT = SYSTEM_PROMPT + """
-10. This bundle covers MULTIPLE captures, possibly from different physical
+15. This bundle covers MULTIPLE captures, possibly from different physical
     devices, grouped under one investigation. The top-level "captures" array
     has one entry per capture, each tagged with "capture_id",
     "original_filename", and "device_label" -- always say which capture/
@@ -509,12 +616,16 @@ INVESTIGATION_SYSTEM_PROMPT = SYSTEM_PROMPT + """
     one unlabeled claim. When the question is about something happening
     "between" or "on one of" multiple devices, look across all entries and
     say which capture(s) actually show relevant evidence, rather than only
-    reporting on the first one.
+    reporting on the first one. Each capture entry has its own
+    "device_context" and "evidence_sources" (rules 11-12) -- when rendering
+    the "## Device" and "## Evidence checked" sections, show them per
+    capture/device, not merged into one.
 """
 
 
 def diagnose_investigation(
     session: Session, investigation_id: int, question: str, provider: str | None = None,
+    history: list[dict] | None = None,
 ) -> dict:
     """Runs diagnosis across every capture linked to one investigation,
     merging each capture's independently-built bundle into one combined
@@ -544,5 +655,5 @@ def diagnose_investigation(
         })
 
     bundle = {"question": question, "captures": captures_bundle}
-    report_text, llm_error = _run_llm(bundle, INVESTIGATION_SYSTEM_PROMPT, provider)
+    report_text, llm_error = _run_llm(bundle, INVESTIGATION_SYSTEM_PROMPT, provider, history)
     return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}

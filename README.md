@@ -270,6 +270,46 @@ fact bundle intact and `report: null` / `llm_error: "<the actual error>"` --
 narration is a convenience layer on top of the independently-verified
 facts, never a single point of failure for them.
 
+## Report structure
+
+The system prompt requires every report to follow a fixed structure
+(`## Direct answer` / `## Findings` / `## Suggested next steps` /
+`## Evidence checked`), rendered in the frontend as real headings/lists
+instead of raw markdown text. Two pieces of this are deterministic, not
+LLM-written:
+
+- `device_context` -- real parsed device info (build fingerprint, kernel,
+  security patch, etc.), attached to the bundle straight from
+  `DeviceInfoRow`.
+- `evidence_sources` -- a code-generated list of which evidence categories
+  were actually checked for this specific question and why (which keyword
+  trigger matched), computed in `build_diagnosis_bundle()` after the fact
+  from which bundle keys actually got populated. This is an honest,
+  cheap substitute for a genuine multi-step research trace, which this
+  system does not run -- ParseCat parses once, deterministically, then
+  makes a single LLM call to narrate; it does not do iterative agentic
+  investigation.
+
+"Suggested next steps" is explicitly the one place the LLM is allowed to
+go beyond the verified bundle (general troubleshooting knowledge) -- the
+system prompt requires it to say so explicitly and never carry a
+confidence label, keeping it visually and textually distinct from the
+verified findings above it.
+
+**Follow-up questions**: the Ask panel and investigation panel each support
+asking a follow-up that builds on the same conversation. The frontend
+sends prior turns (`{question, report}` pairs) as a `history` form field;
+`_format_history()` prepends them to the LLM prompt labeled as context for
+continuity only. Critically, a follow-up still gets its OWN fresh
+`build_diagnosis_bundle()` call keyed off the follow-up's own question
+text -- prior turns are never treated as evidence. A real, honest tradeoff
+found live: a vague follow-up like "should I be worried about that?" has
+none of the crash/wifi/battery/pairing trigger keywords in it, so it gets
+an *empty* evidence bundle for that turn and the LLM correctly declines to
+just restate the previous turn's finding as newly confirmed -- it has to
+be asked with a keyword that actually re-triggers the relevant evidence
+category.
+
 ## Running it
 
 Backend:

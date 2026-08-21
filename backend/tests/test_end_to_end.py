@@ -289,3 +289,47 @@ def test_diagnose_investigation_merges_bundles_across_all_linked_captures(sessio
     assert first["original_filename"] == CAPTURE_1.name
     # Crash-triggering question -> device-wide crash evidence per capture.
     assert "device_wide_crash_evidence" in first
+
+
+def test_diagnose_bundle_includes_real_device_context(session):
+    # Deterministic, not LLM-generated -- straight from DeviceInfoRow, so a
+    # report can open with real build fingerprint/kernel/security-patch
+    # info instead of the LLM guessing at or omitting it.
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(session, capture.id, "frankel-pixel", "Was there a crash on this device?")
+    device_context = result["bundle"]["device_context"]
+    assert device_context["manufacturer"]
+    assert device_context["build_fingerprint"]
+    assert "capture_id" not in device_context  # only real DeviceInfoRow fields, no bookkeeping leaked in
+
+
+def test_diagnose_bundle_evidence_sources_reflects_what_was_actually_checked(session):
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+
+    crash_result = diagnose(session, capture.id, "frankel-pixel", "Was there a crash on this device?")
+    categories = {e["category"] for e in crash_result["bundle"]["evidence_sources"]}
+    assert "crash / ANR / native-crash evidence" in categories
+    assert "Wi-Fi disconnection evidence" not in categories  # question never mentioned wifi
+
+    wifi_result = diagnose(session, capture.id, "frankel-pixel", "Did Wi-Fi drop?")
+    categories = {e["category"] for e in wifi_result["bundle"]["evidence_sources"]}
+    assert "Wi-Fi disconnection evidence" in categories
+    assert "crash / ANR / native-crash evidence" not in categories
+
+
+def test_diagnose_history_is_passed_to_llm_but_not_treated_as_new_evidence(session):
+    # A follow-up question with none of the crash/wifi/battery/pairing
+    # trigger keywords should get an EMPTY evidence bundle for that turn --
+    # prior conversation is context for narration only (SYSTEM_PROMPT rule
+    # 14), never a substitute for this turn's own verified facts. This is
+    # the real, honest tradeoff of per-turn keyword-triggered evidence:
+    # a vague follow-up doesn't inherit the parent question's evidence
+    # categories automatically.
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    first = diagnose(session, capture.id, "frankel-pixel", "Was there a crash on this device?")
+    followup = diagnose(
+        session, capture.id, "frankel-pixel", "Should I be worried about that?",
+        history=[{"question": first["bundle"]["question"], "report": first["report"]}],
+    )
+    assert followup["bundle"]["evidence_sources"] == []
+    assert "device_wide_crash_evidence" not in followup["bundle"]
