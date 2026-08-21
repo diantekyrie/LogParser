@@ -67,6 +67,19 @@ backend/
                               ClientModeImpl state machine log: Wi-Fi
                               disconnection events with IEEE 802.11 reason
                               codes, BSSID association/roam events
+      selinux.py               EVENT LOG / SYSTEM LOG -> SELinux AVC
+                              denials. `enforcing` is three-state and
+                              load-bearing: True (permissive=0) = actually
+                              BLOCKED, a real failure; False (permissive=1)
+                              = logged but allowed through; None = the log
+                              didn't say. Never collapsed into one "a
+                              denial happened" number.
+      process_kills.py         EVENT LOG -> ActivityManager am_kill /
+                              am_proc_died. A "kill" carries a reason; a
+                              "died" only records the process went away and
+                              does NOT establish the system killed it --
+                              counted separately, and only deliberate kills
+                              are ranked or timelined.
       cdm_pairing.py           SYSTEM LOG -> Companion Device Manager /
                               Fast Pair pairing-flow events (discovery,
                               association, secure-channel handshake), plus
@@ -269,6 +282,38 @@ model/endpoint), the request still returns `200` with the full verified
 fact bundle intact and `report: null` / `llm_error: "<the actual error>"` --
 narration is a convenience layer on top of the independently-verified
 facts, never a single point of failure for them.
+
+## Auto-scan
+
+`POST /captures/{id}/scan` answers "what's wrong with this device?" with no
+question required. It calls `build_diagnosis_bundle(include_all_evidence=True)`,
+which bypasses every keyword trigger and gathers all evidence categories --
+this is also the structural fix for keyword-trigger fragility, which bit
+repeatedly in live testing (a "network issue" question that missed the Wi-Fi
+trigger; a vague follow-up that matched nothing at all).
+
+`rank_findings()` then turns raw evidence into a severity-ranked list.
+Severity is computed **in code from the kind of event**, never by the LLM and
+never from how alarming a log line reads -- the same principle as
+`score_confidence()`:
+
+| Severity | What earns it |
+|---|---|
+| CRITICAL | Java crash, native crash (tombstone), ANR |
+| HIGH | SELinux denial with `enforcing: true`; Wi-Fi disconnect the device did **not** initiate |
+| MEDIUM | W/E-level pairing anomalies, Bluetooth HCI failures, deliberate process kills, packet-capture anomalies |
+| LOW | SELinux denial in permissive mode; Wi-Fi disconnect the device initiated itself |
+
+A severity says "this kind of event deserves attention first" -- it does not
+assert the event caused any user-visible symptom, and the system prompt
+forbids claiming a causal link between two findings unless the bundle states
+one.
+
+Identical findings are grouped into one row with an `occurrences` count and
+first/last timestamps. Found live: an early run on a real capture produced 36
+findings, 24 of them the same "Bluetooth command status: Command Disallowed"
+row, which buried the single HIGH Wi-Fi finding. Grouping cut it to 10 rows
+and turned the repetition itself into signal (x24 over 14 minutes).
 
 ## Report structure
 
