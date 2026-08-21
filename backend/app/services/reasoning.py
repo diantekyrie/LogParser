@@ -43,22 +43,37 @@ MULTI_CAPTURE_TRIGGER_RE = re.compile(
     r"week|days|since|before)\b", re.IGNORECASE
 )
 
-CRASH_TRIGGER_RE = re.compile(r"\b(crash|crashed|crashing|anr|fatal|tombstone)\b", re.IGNORECASE)
-# Real gap found live: a "was there a network issue on these devices" question
-# didn't match this trigger at all (no "wifi"/"disconnect"/"drop"/"roam"
-# token), so device_wide_wifi_evidence never made it into the bundle even
-# though the capture had a real Wi-Fi disconnection event with an 802.11
-# reason code sitting in it. Two different LLM providers then both honestly
-# (and correctly, given their bundle) said "no wifi evidence present" --
-# which was true of the bundle but not of the capture. "network"/"internet"
-# added so a network-flavored question always at least checks for Wi-Fi
-# disconnects, same principle as the pairing-trigger gap fixed earlier.
-WIFI_TRIGGER_RE = re.compile(
-    r"\b(wi-?fi|wlan|disconnect|dropped|drop|roam|network|internet)\w*\b", re.IGNORECASE
+# MORPHOLOGY RULE for every trigger below: a stem that is unambiguous in
+# this domain gets a trailing \w* so its inflected forms all match
+# ("crash" -> crashes/crashed/crashing). Short or ambiguous tokens
+# ("ram", "bt", "anr") stay whole-word, because a wildcard on them
+# false-triggers on ordinary English ("ramen", "anrs" is fine but "bt" in
+# "btw" is not).
+#
+# Every one of these gaps was found the same way -- in a real report where
+# a user asked about something the capture HAD and got "unknown" back:
+#   * "was there a network issue" missed WIFI (no wifi/drop/roam token),
+#     so a real 802.11 disconnect went unreported by two providers.
+#   * "tell me about any crashes" missed CRASH, because the pattern listed
+#     crash|crashed|crashing but not the plural "crashes" -- the user's own
+#     exported report then said crashes were "unknown, not ruled out"
+#     while the evidence sat unqueried.
+# See test_natural_language_questions_trigger_the_right_evidence for the
+# regression corpus that now guards this.
+CRASH_TRIGGER_RE = re.compile(
+    r"\b(?:crash\w*|fatal\w*|tombstone\w*|exception\w*|anr|anrs)\b", re.IGNORECASE
 )
-BATTERY_TRIGGER_RE = re.compile(r"\b(battery|drain(?:ed|ing)?|power|mah)\b", re.IGNORECASE)
+WIFI_TRIGGER_RE = re.compile(
+    r"\b(?:wi-?fi\w*|wlan\w*|disconnect\w*|drop\w*|roam\w*|network\w*|internet\w*)\b",
+    re.IGNORECASE,
+)
+BATTERY_TRIGGER_RE = re.compile(
+    r"\b(?:batter(?:y|ies)|drain\w*|discharg\w*|power(?:ed|ing|s)?|wakelock\w*|mah)\b",
+    re.IGNORECASE,
+)
 PAIRING_TRIGGER_RE = re.compile(
-    r"\b(pair(?:ed|ing)?|bond(?:ed|ing)?|bluetooth|\bbt\b|companion|network|connect(?:ed|ion)?)\b",
+    r"\b(?:pair\w*|bond\w*|bluetooth\w*|companion\w*|network\w*|connect\w*|"
+    r"unpair\w*|bt)\b",
     re.IGNORECASE,
 )
 MEMORY_TRIGGER_RE = re.compile(

@@ -443,3 +443,64 @@ def test_memory_question_surfaces_process_kill_evidence(session):
     for e in evidence["events"]:
         if e["kind"] == "died":
             assert e["reason"] is None  # am_proc_died carries no reason
+
+
+def test_natural_language_questions_trigger_the_right_evidence():
+    # Regression corpus for the recurring keyword-trigger gap. Every entry
+    # here is a phrasing a real user would type; each was (or could have
+    # been) a live failure where the capture HAD the evidence and the
+    # report said "unknown" because the pattern missed a word form.
+    #
+    # The one that actually shipped: "tell me about any crashes, network
+    # disconnects, and bluetooth issues." -- the plural "crashes" did not
+    # match crash|crashed|crashing, so crash evidence was never gathered
+    # and the exported report told the user crashes were "unknown, not
+    # ruled out" while the evidence sat unqueried.
+    from app.services import reasoning as r
+
+    must_match = [
+        ("tell me about any crashes, network disconnects, and bluetooth issues.",
+         {"CRASH", "WIFI", "PAIRING"}),
+        ("was there a network issue on these devices?", {"WIFI", "PAIRING"}),
+        ("did the app crash?", {"CRASH"}),
+        ("any ANRs?", {"CRASH"}),
+        ("what exceptions were thrown?", {"CRASH"}),
+        ("why did wifi keep dropping?", {"WIFI"}),
+        ("are there dropped connections?", {"WIFI", "PAIRING"}),
+        ("what drained the battery?", {"BATTERY"}),
+        ("battery discharging fast", {"BATTERY"}),
+        ("any wakelocks holding it awake?", {"BATTERY"}),
+        ("did bluetooth pairing fail?", {"PAIRING"}),
+        ("show me failed pairings", {"PAIRING"}),
+        ("any selinux denials?", {"SELINUX"}),
+        ("was anything blocked by policy?", {"SELINUX"}),
+        ("was there a memory leak?", {"MEMORY"}),
+        ("what processes got killed?", {"MEMORY"}),
+    ]
+    names = ["CRASH", "WIFI", "BATTERY", "PAIRING", "SELINUX", "MEMORY"]
+    for question, expected in must_match:
+        fired = {n for n in names if getattr(r, f"{n}_TRIGGER_RE").search(question)}
+        missing = expected - fired
+        assert not missing, f"{question!r} should trigger {sorted(missing)} but fired {sorted(fired)}"
+
+    # Ordinary English that merely contains a substring must NOT trigger --
+    # an earlier pattern matched "ramen" because of a wildcarded "ram".
+    for word in ["ramen", "skillet", "btw", "killer feature"]:
+        fired = {n for n in names if getattr(r, f"{n}_TRIGGER_RE").search(word)}
+        assert not fired, f"{word!r} should trigger nothing but fired {sorted(fired)}"
+
+
+def test_crash_evidence_is_gathered_for_a_plural_crashes_question(session):
+    # End-to-end proof of the fix: the exact phrasing from a real exported
+    # report that came back with no crash evidence at all.
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = diagnose(
+        session, capture.id, "frankel-pixel",
+        "tell me about any crashes, network disconnects, and bluetooth issues.",
+    )
+    bundle = result["bundle"]
+    assert "device_wide_crash_evidence" in bundle, \
+        "a question about 'crashes' must gather crash evidence"
+    assert len(bundle["device_wide_crash_evidence"]["java_crashes"]) == 1
+    categories = {e["category"] for e in bundle["evidence_sources"]}
+    assert "crash / ANR / native-crash evidence" in categories
