@@ -223,7 +223,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [question, setQuestion] = useState("");
-  const [diagnosis, setDiagnosis] = useState(null);
+  // Keyed by capture_id rather than a single value so switching which
+  // capture is selected doesn't discard a previously-run diagnosis --
+  // re-running it costs real LLM tokens, and the user may just be
+  // glancing at another capture's parsed facts before coming back.
+  const [diagnosisByCapture, setDiagnosisByCapture] = useState({});
+  const diagnosis = selectedCaptureId != null ? diagnosisByCapture[selectedCaptureId] ?? null : null;
   const [diagnosing, setDiagnosing] = useState(false);
   const [providers, setProviders] = useState([]);
   const [provider, setProvider] = useState("");
@@ -302,7 +307,6 @@ export default function App() {
 
   function selectCapture(id) {
     setSelectedCaptureId(id);
-    setDiagnosis(null);
     const seq = ++summarySeq.current;
     api(`/captures/${id}/summary`)
       .then((s) => {
@@ -352,15 +356,16 @@ export default function App() {
   async function handleDiagnose(e) {
     e.preventDefault();
     if (!selectedCaptureId || !question) return;
+    const captureId = selectedCaptureId;
     setDiagnosing(true);
     setError(null);
-    setDiagnosis(null);
+    setDiagnosisByCapture((prev) => ({ ...prev, [captureId]: null }));
     try {
       const form = new FormData();
       form.append("question", question);
       if (provider) form.append("provider", provider);
-      const data = await api(`/captures/${selectedCaptureId}/diagnose`, { method: "POST", body: form });
-      setDiagnosis(data);
+      const data = await api(`/captures/${captureId}/diagnose`, { method: "POST", body: form });
+      setDiagnosisByCapture((prev) => ({ ...prev, [captureId]: data }));
     } catch (err) {
       setError(String(err));
     } finally {
