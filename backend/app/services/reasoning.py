@@ -237,14 +237,30 @@ def build_entity_claim(ev: EntityVerification, history: PackageHistory | None) -
     return claim
 
 
-def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str, question: str) -> dict:
+def build_diagnosis_bundle(
+    session: Session, capture_id: int, device_label: str, question: str,
+    include_all_evidence: bool = False,
+) -> dict:
     """Everything diagnose() needs except the actual LLM call -- pulled out
     so investigation-level diagnosis (see diagnose_investigation()) can
     build one bundle per capture and merge them before a single LLM call,
     without duplicating the per-capture fact-gathering logic.
+
+    include_all_evidence=True gathers EVERY evidence category regardless of
+    what the question's keywords matched -- used by auto-scan (scan_capture),
+    where there is no question to trigger off. Keyword triggers exist to keep
+    a targeted question's bundle small and relevant; when the whole point is
+    "tell me everything wrong with this device", that filtering is exactly
+    what we don't want. This also sidesteps the keyword-trigger fragility
+    found repeatedly in live testing (a "network issue" question missing the
+    Wi-Fi trigger; a vague follow-up matching nothing at all).
     """
     entities = verify_question_entities(session, capture_id, question)
     want_history = bool(MULTI_CAPTURE_TRIGGER_RE.search(question))
+    want_crash = include_all_evidence or bool(CRASH_TRIGGER_RE.search(question))
+    want_wifi = include_all_evidence or bool(WIFI_TRIGGER_RE.search(question))
+    want_battery = include_all_evidence or bool(BATTERY_TRIGGER_RE.search(question))
+    want_pairing = include_all_evidence or bool(PAIRING_TRIGGER_RE.search(question))
 
     claims = []
     for ev in entities:
@@ -307,7 +323,7 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
     def _capture_tag(row_capture_id: int) -> dict:
         return {"capture_id": row_capture_id, "original_filename": capture_filenames.get(row_capture_id)}
 
-    if CRASH_TRIGGER_RE.search(question):
+    if want_crash:
         # Device-wide crash evidence, surfaced regardless of whether it's
         # attributable to a named app -- so a crash question never comes
         # back "unknown" when there's a real crash on the device that
@@ -369,7 +385,7 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
             ],
         }
 
-    if WIFI_TRIGGER_RE.search(question):
+    if want_wifi:
         # Wi-Fi connectivity is device-wide, not attributable to a named
         # app, so this always surfaces regardless of whether any app was
         # named -- same principle as device_wide_crash_evidence.
@@ -396,7 +412,7 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
             ],
         }
 
-    if BATTERY_TRIGGER_RE.search(question):
+    if want_battery:
         # Battery attribution is per-UID, not automatically tied to a named
         # app in the question -- surfaced device-wide (top consumers) so a
         # battery question always gets real evidence, same principle as
@@ -429,7 +445,7 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
             ],
         }
 
-    if PAIRING_TRIGGER_RE.search(question):
+    if want_pairing:
         # Real gap found live: a "network error while pairing" question
         # between two devices came back "unknown" from two different LLM
         # providers, even though the actual pairing session -- Fast Pair
@@ -503,9 +519,16 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
                     "event_count": bt_row.event_count, "first_timestamp": bt_row.first_timestamp,
                     "last_timestamp": bt_row.last_timestamp,
                     **_capture_tag(bt_row.capture_id),
+                    # Each notable event carries the same computed confidence
+                    # every other evidence category does. Found live: without
+                    # this, auto-scan's Bluetooth findings were the only ones
+                    # reporting "confidence: null", and the LLM (correctly,
+                    # per rule 2) called that out in the report instead of
+                    # labeling them itself.
                     "notable_events": [
                         {"timestamp": e.timestamp, "kind": e.kind, "status_name": e.status_name,
-                         "reason_name": e.reason_name, "handle": e.handle}
+                         "reason_name": e.reason_name, "handle": e.handle,
+                         "confidence": pairing_confidence, "corroboration": pairing_corroboration}
                         for e in bt_events if e.kind == "disconnection_complete" or (e.status_code or 0) != 0
                     ],
                 })
@@ -550,12 +573,182 @@ def build_diagnosis_bundle(session: Session, capture_id: int, device_label: str,
         if bundle.get(key):
             evidence_sources.append({
                 "category": label,
-                "reason": "question matched a keyword trigger for this evidence category",
+                "reason": (
+                    "auto-scan: every evidence category is checked"
+                    if include_all_evidence
+                    else "question matched a keyword trigger for this evidence category"
+                ),
                 "detail": f"checked across {captures_checked} capture(s) on file for this device",
             })
     bundle["evidence_sources"] = evidence_sources
 
     return bundle
+
+
+SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def rank_findings(bundle: dict) -> list[dict]:
+    """Turns a bundle's raw evidence into a severity-ranked findings list.
+
+    Severity is computed HERE, in code, from what kind of event it is --
+    never by the LLM, and never from how alarming a log line's text sounds.
+    Same principle as score_confidence(): a crash is CRITICAL because it is
+    a crash, not because a model decided it read as serious. Confidence and
+    citations are carried through from the underlying evidence verbatim, so
+    a ranked finding is still fully traceable to its source lines.
+
+    A finding's severity says "this kind of event deserves attention first";
+    it does NOT assert the event caused any particular user-visible symptom.
+    """
+    findings: list[dict] = []
+
+    def add(severity: str, category: str, title: str, detail: str, row: dict) -> None:
+        findings.append({
+            "severity": severity,
+            "category": category,
+            "title": title,
+            "detail": detail,
+            "confidence": row.get("confidence"),
+            "corroboration": row.get("corroboration"),
+            "capture_id": row.get("capture_id"),
+            "original_filename": row.get("original_filename"),
+            "source": row.get("source"),
+            "timestamp": row.get("timestamp"),
+        })
+
+    crash = bundle.get("device_wide_crash_evidence") or {}
+    for c in crash.get("java_crashes", []):
+        root = c.get("root_cause_class") or c.get("exception_class") or "exception"
+        add("CRITICAL", "crash", f"Java crash in {c.get('package') or 'unknown package'}",
+            f"{c.get('exception_class') or 'exception'}"
+            + (f" -- root cause: {root}: {c.get('root_cause_message') or ''}".rstrip(": ") if c.get("root_cause_class") else "")
+            + (f" ({c.get('message')})" if c.get("message") else ""), c)
+    for t in crash.get("native_crashes", []):
+        who = t.get("package") or t.get("executable") or "unattributed process"
+        add("CRITICAL", "native_crash", f"Native crash in {who}",
+            f"signal {t.get('signal_name') or 'unknown'}"
+            + (f" ({t.get('signal_code')})" if t.get("signal_code") else "")
+            + (f", top frame {t.get('top_frame')}" if t.get("top_frame") else ""), t)
+    for a in crash.get("anrs", []):
+        add("CRITICAL", "anr", f"ANR in {a.get('package') or 'unknown package'}",
+            a.get("reason") or "no reason recorded", a)
+
+    wifi = bundle.get("device_wide_wifi_evidence") or {}
+    for w in wifi.get("disconnections", []):
+        # A disconnect the device asked for is routine; one it did not is the
+        # interesting case (AP kicked us, or the link failed).
+        locally = w.get("locally_generated")
+        add("HIGH" if locally is False else "LOW", "wifi",
+            f"Wi-Fi disconnect from {w.get('ssid') or 'unknown SSID'}"
+            + ("" if locally is False else " (locally initiated)"),
+            f"802.11 reason {w.get('reason_code')} ({w.get('reason_name')})", w)
+
+    pairing = bundle.get("device_wide_pairing_evidence") or {}
+    for e in pairing.get("events", []):
+        if e.get("kind") != "anomaly":
+            continue
+        # Log level is the only signal here -- the detail text is NOT
+        # independently interpreted (same caveat the LLM is given).
+        add("HIGH" if e.get("level") == "E" else "MEDIUM", "pairing",
+            f"{e.get('tag')} logged a {'error' if e.get('level') == 'E' else 'warning'}-level anomaly",
+            e.get("detail") or "", e)
+
+    for bt in (bundle.get("bt_hci_summary") or []):
+        for ev in bt.get("notable_events", []):
+            status = ev.get("status_name")
+            reason = ev.get("reason_name")
+            if status and status != "Success":
+                add("MEDIUM", "bluetooth", f"Bluetooth {ev.get('kind', '').replace('_', ' ')}: {status}",
+                    f"handle {ev.get('handle')}" if ev.get("handle") is not None else "",
+                    {**ev, "capture_id": bt.get("capture_id"), "original_filename": bt.get("original_filename")})
+            elif reason and "Failed" in reason:
+                add("MEDIUM", "bluetooth", f"Bluetooth connection failure: {reason}",
+                    f"handle {ev.get('handle')}" if ev.get("handle") is not None else "",
+                    {**ev, "capture_id": bt.get("capture_id"), "original_filename": bt.get("original_filename")})
+
+    for pa in (bundle.get("packet_analysis") or []):
+        anomalies = pa.get("anomalies") or []
+        by_kind: dict[str, int] = {}
+        for a in anomalies:
+            by_kind[a.get("kind", "anomaly")] = by_kind.get(a.get("kind", "anomaly"), 0) + 1
+        for kind, count in by_kind.items():
+            add("MEDIUM", "packet_capture",
+                f"{count} {kind.replace('_', ' ')} frame(s) in packet capture",
+                pa.get("note") or "",
+                {"capture_id": pa.get("capture_id"), "original_filename": pa.get("original_filename"),
+                 "confidence": "LOW",
+                 "corroboration": "Counted directly from one packet capture's own decoded frames."})
+
+    # Collapse repeats. Found live on a real capture: a single scan produced
+    # 24 identical "Bluetooth command status: Command Disallowed" rows, which
+    # buried the one HIGH Wi-Fi finding under near-duplicate noise. A repeated
+    # event is one finding that happened N times, not N findings -- and the
+    # repetition itself is signal worth showing (occurrences + time span),
+    # so it's surfaced rather than silently dropped.
+    grouped: dict[tuple, dict] = {}
+    for f in findings:
+        key = (f["severity"], f["category"], f["title"], f["detail"], f.get("original_filename"))
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = {**f, "occurrences": 1, "first_timestamp": f.get("timestamp"),
+                            "last_timestamp": f.get("timestamp")}
+            continue
+        existing["occurrences"] += 1
+        stamps = [s for s in (existing.get("first_timestamp"), existing.get("last_timestamp"),
+                              f.get("timestamp")) if s]
+        if stamps:
+            existing["first_timestamp"] = min(stamps)
+            existing["last_timestamp"] = max(stamps)
+
+    out = list(grouped.values())
+    # Within a severity, show the most-repeated first -- a failure happening
+    # 24 times is more worth looking at than the same-severity one-off.
+    out.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 9), -f["occurrences"],
+                            f.get("first_timestamp") or ""))
+    return out
+
+
+SCAN_SYSTEM_PROMPT = SYSTEM_PROMPT + """
+15. This is an AUTO-SCAN, not an answer to a specific user question: every
+    evidence category was gathered unconditionally, and the bundle includes
+    a "ranked_findings" list whose "severity" values (CRITICAL / HIGH /
+    MEDIUM / LOW) were computed in code from the KIND of each event -- not
+    by you, and not from how alarming any log text reads. Carry each
+    severity forward verbatim exactly as rule 2 requires for confidence,
+    and never re-rank or re-label. A severity means "this kind of event
+    deserves attention first"; it does NOT assert the event caused any
+    particular user-visible symptom, so do not claim a causal link between
+    two findings unless the bundle itself states one. Each finding carries
+    an "occurrences" count (identical repeats are grouped into one finding)
+    with "first_timestamp"/"last_timestamp" -- when occurrences > 1, say how
+    many times it happened and over what span, since a failure repeating 24
+    times reads very differently from a one-off.
+16. For an auto-scan, replace the "## Direct answer" section with a
+    "## Summary" section: how many findings at each severity, and what the
+    most serious ones are. Then "## Findings" walks the ranked list in
+    order. If ranked_findings is empty, say plainly that no crashes, ANRs,
+    disconnects, or pairing/Bluetooth anomalies were found in the captures
+    checked -- and say that this means nothing was found in the categories
+    ParseCat parses, not that the device is problem-free.
+"""
+
+
+def scan_capture(
+    session: Session, capture_id: int, device_label: str, provider: str | None = None,
+) -> dict:
+    """Auto-scan: gather every evidence category with no question at all,
+    rank the findings by computed severity, and narrate. This is the
+    "upload and get answers without knowing what to ask" path.
+    """
+    question = "Full automatic scan: what problems are present on this device?"
+    bundle = build_diagnosis_bundle(
+        session, capture_id, device_label, question, include_all_evidence=True,
+    )
+    bundle["ranked_findings"] = rank_findings(bundle)
+    bundle["scan"] = True
+    report_text, llm_error = _run_llm(bundle, SCAN_SYSTEM_PROMPT, provider)
+    return {"bundle": bundle, "report": report_text, "llm_error": llm_error, "provider": provider}
 
 
 def _format_history(history: list[dict] | None) -> str:

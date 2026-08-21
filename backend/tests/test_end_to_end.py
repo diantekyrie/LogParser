@@ -333,3 +333,74 @@ def test_diagnose_history_is_passed_to_llm_but_not_treated_as_new_evidence(sessi
     )
     assert followup["bundle"]["evidence_sources"] == []
     assert "device_wide_crash_evidence" not in followup["bundle"]
+
+
+def test_auto_scan_gathers_every_evidence_category_without_a_question(session):
+    # The point of auto-scan: no question means no keyword triggers, so
+    # every category must be gathered unconditionally. This is also the
+    # structural fix for the keyword-trigger fragility found repeatedly in
+    # live testing (a "network issue" question missing the Wi-Fi trigger).
+    from app.services.reasoning import scan_capture
+
+    capture = _ingest(session, "frankel-pixel", CAPTURE_1)
+    result = scan_capture(session, capture.id, "frankel-pixel")
+    bundle = result["bundle"]
+
+    assert bundle["scan"] is True
+    for key in ("device_wide_crash_evidence", "device_wide_wifi_evidence",
+                "device_wide_battery_evidence", "device_wide_pairing_evidence"):
+        assert key in bundle, f"auto-scan must gather {key} with no question asked"
+    categories = {e["category"] for e in bundle["evidence_sources"]}
+    assert len(categories) >= 4
+    assert all("auto-scan" in e["reason"] for e in bundle["evidence_sources"])
+
+
+def test_ranked_findings_severity_is_computed_and_repeats_are_grouped():
+    # Severity comes from the KIND of event, in code -- never from how
+    # alarming the text reads, and never from the LLM. Repeats collapse into
+    # one finding with an occurrences count (found live: a real capture
+    # produced 24 identical Bluetooth rows that buried the one HIGH finding).
+    from app.services.reasoning import rank_findings
+
+    bundle = {
+        "device_wide_crash_evidence": {
+            "java_crashes": [{"package": "com.example.app", "exception_class": "NullPointerException",
+                              "confidence": "LOW", "timestamp": "01-01 00:00:01"}],
+            "native_crashes": [], "anrs": [],
+        },
+        "device_wide_wifi_evidence": {
+            "disconnections": [
+                {"ssid": "net-a", "reason_code": 3, "reason_name": "Deauthenticated",
+                 "locally_generated": False, "confidence": "LOW", "timestamp": "01-01 00:00:02"},
+                {"ssid": "net-b", "reason_code": 3, "reason_name": "Deauthenticated",
+                 "locally_generated": True, "confidence": "LOW", "timestamp": "01-01 00:00:03"},
+            ],
+        },
+        "bt_hci_summary": [{
+            "capture_id": 1, "original_filename": "cap.zip",
+            "notable_events": [
+                {"kind": "command_status", "status_name": "Command Disallowed", "handle": None,
+                 "confidence": "LOW", "timestamp": f"01-01 00:00:1{i}"} for i in range(5)
+            ],
+        }],
+    }
+    findings = rank_findings(bundle)
+
+    # Crash outranks the not-locally-generated Wi-Fi drop, which outranks BT.
+    assert findings[0]["severity"] == "CRITICAL"
+    assert findings[0]["category"] == "crash"
+    assert findings[1]["severity"] == "HIGH"
+    assert findings[1]["category"] == "wifi"
+
+    # A device-initiated disconnect is routine -> LOW, not HIGH.
+    local = [f for f in findings if "net-b" in f["title"]]
+    assert len(local) == 1 and local[0]["severity"] == "LOW"
+
+    # Five identical BT events collapse to one finding counted five times.
+    bt = [f for f in findings if f["category"] == "bluetooth"]
+    assert len(bt) == 1
+    assert bt[0]["occurrences"] == 5
+    assert bt[0]["first_timestamp"] != bt[0]["last_timestamp"]
+
+    # Every finding carries a confidence label forward (no nulls).
+    assert all(f["confidence"] for f in findings)

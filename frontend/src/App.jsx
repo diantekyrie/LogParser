@@ -276,6 +276,55 @@ function TriageControls({
   );
 }
 
+const FINDING_TONE = { CRITICAL: "var(--red)", HIGH: "var(--orange)", MEDIUM: "var(--amber)", LOW: "var(--blue)" };
+
+function FindingsList({ findings }) {
+  if (!findings || findings.length === 0) {
+    return (
+      <p className="muted small">
+        No crashes, ANRs, disconnects, or Bluetooth/pairing anomalies were found in the captures
+        checked. That means nothing turned up in the categories ParseCat parses — not that the
+        device is problem-free.
+      </p>
+    );
+  }
+  const counts = findings.reduce((acc, f) => ({ ...acc, [f.severity]: (acc[f.severity] || 0) + 1 }), {});
+  return (
+    <>
+      <div className="finding-tally">
+        {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((sev) => (
+          counts[sev] ? (
+            <span className="finding-count" key={sev} style={{ color: FINDING_TONE[sev] }}>
+              <b>{counts[sev]}</b> {sev.toLowerCase()}
+            </span>
+          ) : null
+        ))}
+      </div>
+      <ul className="finding-list">
+        {findings.map((f, i) => (
+          <li key={i} style={{ borderLeftColor: FINDING_TONE[f.severity] }}>
+            <div className="finding-head">
+              <span className="badge" style={{ background: FINDING_TONE[f.severity] }}>{f.severity}</span>
+              <strong>{f.title}</strong>
+              {f.occurrences > 1 && <span className="finding-occ">×{f.occurrences}</span>}
+              {f.confidence && <span className="badge" style={{ background: CONFIDENCE_COLOR[f.confidence] }}>{f.confidence}</span>}
+            </div>
+            {f.detail && <div className="muted small finding-detail">{f.detail}</div>}
+            <div className="finding-meta">
+              {f.occurrences > 1 && f.first_timestamp && (
+                <span className="muted small">{f.first_timestamp} → {f.last_timestamp}</span>
+              )}
+              {f.occurrences === 1 && f.timestamp && <span className="muted small">{f.timestamp}</span>}
+              <CaptureTag filename={f.original_filename} />
+              <SourceTag source={f.source} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 function ClaimCard({ claim, deviceLabel }) {
   const s = claim.verified_state;
   return (
@@ -336,6 +385,12 @@ export default function App() {
   const [diagnosisByCapture, setDiagnosisByCapture] = useState({});
   const diagnosis = selectedCaptureId != null ? diagnosisByCapture[selectedCaptureId] ?? null : null;
   const [diagnosing, setDiagnosing] = useState(false);
+  // Auto-scan is cached per capture for the same reason diagnoses are:
+  // re-running costs real LLM tokens and the user may just be glancing at
+  // another capture before coming back.
+  const [scanByCapture, setScanByCapture] = useState({});
+  const scan = selectedCaptureId != null ? scanByCapture[selectedCaptureId] ?? null : null;
+  const [scanning, setScanning] = useState(false);
   const [followUpQuestion, setFollowUpQuestion] = useState("");
   const [followUpBusy, setFollowUpBusy] = useState(false);
   const [providers, setProviders] = useState([]);
@@ -493,6 +548,23 @@ export default function App() {
       setError(String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleScan() {
+    if (!selectedCaptureId) return;
+    const captureId = selectedCaptureId;
+    setScanning(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      if (provider) form.append("provider", provider);
+      const data = await api(`/captures/${captureId}/scan`, { method: "POST", body: form });
+      setScanByCapture((prev) => ({ ...prev, [captureId]: data }));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -821,6 +893,30 @@ export default function App() {
 
             {askScope === "device" ? (
               <>
+                <div className="scan-row">
+                  <button type="button" onClick={handleScan} disabled={scanning || !selectedCaptureId}>
+                    {scanning ? "Scanning…" : "Scan for problems"}
+                  </button>
+                  <span className="muted small">
+                    No question needed — checks every evidence category and ranks what it finds by severity.
+                  </span>
+                </div>
+
+                {scan && (
+                  <div className="ask-result">
+                    <h3>Scan findings</h3>
+                    <FindingsList findings={scan.bundle.ranked_findings} />
+                    {scan.report ? (
+                      <>
+                        <h3>Summary {scan.provider && <span className="muted small"> - narrated by {providers.find((p) => p.id === scan.provider)?.label || scan.provider}</span>}</h3>
+                        <div className="report">{renderMarkdown(scan.report)}</div>
+                      </>
+                    ) : (
+                      <div className="error">LLM narration failed (findings above are unaffected): {scan.llm_error}</div>
+                    )}
+                  </div>
+                )}
+
                 <p className="muted small">
                   Named apps are independently verified against parsed facts; the question's framing is not taken as
                   fact. Device-wide evidence (crashes, Wi-Fi, battery, pairing) is checked across every capture on
@@ -1385,6 +1481,15 @@ export default function App() {
         .scope-toggle button:hover:not(:disabled) { background: transparent; color: var(--text); }
         .scope-toggle button.active { background: var(--accent); color: #1a0e05; }
         .severity-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .scan-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+        .finding-tally { display: flex; gap: 16px; margin-bottom: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .finding-count b { font-size: 15px; }
+        .finding-list { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+        .finding-list li { background: #0e1420; border: 1px solid var(--panel-border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 9px 12px; }
+        .finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+        .finding-occ { font-family: ui-monospace, monospace; font-size: 12px; color: var(--amber); font-weight: 700; }
+        .finding-detail { margin-top: 3px; word-break: break-word; }
+        .finding-meta { display: flex; align-items: center; gap: 10px; margin-top: 5px; flex-wrap: wrap; }
         .ask-result { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--panel-border); }
 
         .tabbar { display: flex; gap: 2px; border-bottom: 1px solid var(--panel-border); position: sticky; top: 0; z-index: 2; background: var(--bg); padding-top: 2px; }

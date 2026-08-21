@@ -13,7 +13,7 @@ from app.llm import list_providers
 from app.models.db_models import Capture, Device, Investigation, InvestigationCaptureLink
 from app.services.ingestion import parse_capture_file
 from app.services.persistence import persist_capture
-from app.services.reasoning import diagnose, diagnose_investigation
+from app.services.reasoning import diagnose, diagnose_investigation, scan_capture
 from app.services.summary import build_capture_summary, build_merged_summary, capture_severity
 
 router = APIRouter()
@@ -170,6 +170,21 @@ def diagnose_capture(
         provider=provider, history=_parse_history(history),
     )
     return result
+
+
+@router.post("/captures/{capture_id}/scan")
+def scan_capture_route(
+    capture_id: int,
+    provider: str | None = Form(None),
+    session: Session = Depends(get_session),
+):
+    """Auto-scan -- no question required. Gathers every evidence category
+    and returns severity-ranked findings plus a narrated summary."""
+    capture = session.get(Capture, capture_id)
+    if capture is None:
+        raise HTTPException(404, "Unknown capture")
+    device = session.get(Device, capture.device_id)
+    return scan_capture(session, capture_id, device.label, provider=provider)
 
 
 @router.post("/investigations/{investigation_label}/diagnose")
