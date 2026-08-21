@@ -105,11 +105,19 @@ backend/
                           (crash/ANR/fatal/tombstone) get device-wide
                           crash/ANR/native-crash evidence even when no
                           app is named.
-      summary.py          assembles one capture's dashboard payload:
-                          device info, fact counts, top freeze/unfreeze
-                          offenders, crash/ANR/tombstone tables, Bluetooth
-                          HCI summary, a merged chronological timeline --
-                          all reads of already-persisted rows
+      summary.py          build_capture_summary() assembles one capture's
+                          dashboard payload (device info, fact counts,
+                          top freeze/unfreeze offenders, crash/ANR/
+                          tombstone tables, Bluetooth HCI summary, a
+                          merged chronological timeline). build_merged_summary()
+                          combines that across every capture on file for a
+                          device or investigation into one payload -- the
+                          dashboard's default view -- reusing
+                          build_capture_summary() per capture rather than
+                          re-querying, with every row tagged by which
+                          capture it actually came from so nothing reads as
+                          "this capture" when it's really a different one.
+                          All reads of already-persisted rows.
     llm/                LLMClient interface with four selectable
                          providers (see "LLM providers" below); every
                          implementation only narrates an already-verified
@@ -132,18 +140,23 @@ frontend/               React + Vite dashboard: device info panel, stat
 
 ## Upload formats
 
-The local dashboard accepts four upload types:
+The local dashboard accepts three upload types:
 
 | Extension | Current support |
 |---|---|
 | `.zip` | Full Android bugreport ZIP ingestion, including flattened bugreport text plus ZIP-contained tombstones, ANRs, and Bluetooth HCI log files. |
 | `.txt` | Direct flattened Android bugreport text ingestion. ZIP-only companion files are not available, so tombstones/ANRs/HCI files are reported as unavailable. |
 | `.pcap`, `.pcapng` | Container-level metadata (packet count, byte totals, time range, link type) plus real protocol-level dissection -- see "Packet capture analysis" below. |
-| `.btt` | Accepted as an Ellisys artifact. If the bytes are actually `btsnoop`/HCI, they are parsed by the existing Bluetooth HCI parser; otherwise the upload is kept as a capture with an explicit warning that native Ellisys `.btt` decoding needs a sample/spec or an Ellisys export to btsnoop/pcap. |
+
+`.btt` (Ellisys) uploads are explicitly not supported: opening one for
+real requires Ellisys's own proprietary software, so accepting the file
+here without being able to decode most of it was more misleading than
+useful. If a real `.btt` sample or the format spec ever becomes
+available, this can be revisited.
 
 Uploads can also be grouped into a named bug folder/investigation so one
 local investigation can contain multiple supporting files, such as a
-bugreport ZIP, a raw text log, a packet capture, and an Ellisys artifact.
+bugreport ZIP, a raw text log, and a packet capture.
 The dashboard file picker accepts multiple files at once and uploads each
 as a separate capture under the same bug folder.
 

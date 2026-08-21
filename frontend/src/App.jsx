@@ -68,6 +68,16 @@ function SourceTag({ source }) {
   );
 }
 
+// Rows in the merged summary come from possibly-different captures (and,
+// in an investigation, possibly-different physical devices) -- this makes
+// which one a given row came from visible everywhere it's shown, not just
+// implied by whichever capture happens to be selected in the sidebar.
+function CaptureTag({ filename }) {
+  if (!filename) return null;
+  const short = filename.length > 30 ? `${filename.slice(0, 27)}…` : filename;
+  return <span className="capture-tag" title={filename}>{short}</span>;
+}
+
 function StatCard({ label, value, tone }) {
   return (
     <div className={`stat stat-${tone || "default"}`}>
@@ -110,7 +120,7 @@ function Timeline({ events }) {
         <div className="timeline-row" key={i}>
           <span className="timeline-dot" style={{ background: SEVERITY_COLOR[e.severity] || "var(--muted)" }} />
           <span className="timeline-ts">{e.timestamp}</span>
-          <span className="timeline-label">{e.label}</span>
+          <span className="timeline-label">{e.label} <CaptureTag filename={e.original_filename} /></span>
           <SourceTag source={e.source} />
         </div>
       ))}
@@ -284,15 +294,42 @@ export default function App() {
   const captureLookupSeq = useRef(0);
   const summarySeq = useRef(0);
 
+  // Fetches the merged summary (every capture in the current device or
+  // investigation, parsed and combined into one dashboard payload with
+  // each row tagged by which capture it came from) rather than one
+  // capture's summary at a time -- this is what lets the dashboard show
+  // "all logs at once" instead of requiring a click through each capture
+  // to see its own facts.
+  const loadMergedSummary = useCallback((path) => {
+    if (!path) { setSummary(null); return; }
+    const seq = ++summarySeq.current;
+    api(path)
+      .then((s) => {
+        if (seq !== summarySeq.current) return;
+        setSummary(Object.keys(s).length > 0 ? s : null);
+        setError(null);
+      })
+      .catch((e) => {
+        if (seq !== summarySeq.current) return;
+        setError(String(e));
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadCaptures = useCallback((label) => {
-    if (!label) { setCaptures([]); return; }
+    if (!label) { setCaptures([]); setSummary(null); return; }
     const seq = ++captureLookupSeq.current;
     api(`/devices/${encodeURIComponent(label)}/captures`)
       .then((cs) => {
         if (seq !== captureLookupSeq.current) return; // superseded by a later keystroke
         setCaptures(cs);
         setError(null);
-        if (cs.length > 0) selectCapture(cs[cs.length - 1].id);
+        if (cs.length > 0) {
+          setSelectedCaptureId(cs[cs.length - 1].id);
+          loadMergedSummary(`/devices/${encodeURIComponent(label)}/summary`);
+        } else {
+          setSummary(null);
+        }
       })
       .catch(() => {
         if (seq !== captureLookupSeq.current) return;
@@ -312,7 +349,12 @@ export default function App() {
         if (seq !== captureLookupSeq.current) return;
         setCaptures(cs);
         setError(null);
-        if (cs.length > 0) selectCapture(cs[cs.length - 1].id);
+        if (cs.length > 0) {
+          setSelectedCaptureId(cs[cs.length - 1].id);
+          loadMergedSummary(`/investigations/${encodeURIComponent(label)}/summary`);
+        } else {
+          setSummary(null);
+        }
       })
       .catch(() => {
         if (seq !== captureLookupSeq.current) return;
@@ -321,19 +363,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceLabel, loadCaptures]);
 
+  // Only changes which capture the "This device" Ask button targets
+  // (POST /captures/{id}/diagnose still needs one specific id) -- the
+  // dashboard itself always shows the merged view for every capture
+  // currently loaded, not just this one.
   function selectCapture(id) {
     setSelectedCaptureId(id);
-    const seq = ++summarySeq.current;
-    api(`/captures/${id}/summary`)
-      .then((s) => {
-        if (seq !== summarySeq.current) return;
-        setSummary(s);
-        setError(null);
-      })
-      .catch((e) => {
-        if (seq !== summarySeq.current) return;
-        setError(String(e));
-      });
   }
 
   async function handleUpload(e) {
@@ -358,7 +393,7 @@ export default function App() {
       refreshInvestigations();
       if (investigationLabel.trim()) loadInvestigationCaptures(investigationLabel.trim());
       else loadCaptures(deviceLabel);
-      if (latestCaptureId) selectCapture(latestCaptureId);
+      if (latestCaptureId) setSelectedCaptureId(latestCaptureId);
       setSelectedFiles([]);
       setFileInputKey((key) => key + 1);
       setUploadProgress("");
@@ -452,20 +487,23 @@ export default function App() {
     };
   }, [summary, appFilter, timelineFilter, incidentTime, incidentWindow]);
 
+  const summaryScopeSlug = (investigationLabel.trim() || deviceLabel || "capture").replace(/[^\w-]+/g, "_");
+
   function exportSummary() {
     if (!summary) return;
     downloadText(
-      `parsecat-capture-${summary.capture_id}-summary.json`,
+      `parsecat-${summaryScopeSlug}-summary.json`,
       JSON.stringify(summary, null, 2),
       "application/json",
     );
   }
 
   function exportDiagnosis() {
-    if (!diagnosis || !summary) return;
+    if (!diagnosis || !selectedCaptureId) return;
+    const targetCapture = captures.find((cap) => cap.id === selectedCaptureId);
     const report = [
       "ParseCat diagnosis export",
-      `capture: #${summary.capture_id} ${summary.original_filename}`,
+      `capture: #${selectedCaptureId}${targetCapture ? ` ${targetCapture.original_filename}` : ""}`,
       `provider: ${diagnosis.provider || "auto"}`,
       "",
       "question:",
@@ -477,7 +515,7 @@ export default function App() {
       "verified fact bundle:",
       JSON.stringify(diagnosis.bundle, null, 2),
     ].join("\n");
-    downloadText(`parsecat-capture-${summary.capture_id}-diagnosis.txt`, report);
+    downloadText(`parsecat-capture-${selectedCaptureId}-diagnosis.txt`, report);
   }
 
   return (
@@ -525,7 +563,7 @@ export default function App() {
               <input
                 key={fileInputKey}
                 type="file"
-                accept=".zip,.txt,.pcap,.pcapng,.btt"
+                accept=".zip,.txt,.pcap,.pcapng"
                 multiple
                 onChange={(e) => setSelectedFiles(Array.from(e.target.files || []))}
               />
@@ -738,11 +776,20 @@ export default function App() {
                 <>
                   <section className="panel">
                     <h2>Device information</h2>
-                    <DeviceInfoPanel info={summary.device_info} />
+                    {summary.device_infos.length === 0 && <p className="muted">No device info parsed for any linked capture.</p>}
+                    {summary.device_infos.map((info) => (
+                      <div key={info.capture_id} className="device-info-block">
+                        <CaptureTag filename={info.original_filename} />
+                        <DeviceInfoPanel info={info} />
+                      </div>
+                    ))}
                   </section>
 
                   <section className="panel">
-                    <h2>Parsed facts (capture #{summary.capture_id})</h2>
+                    <h2>Parsed facts ({summary.capture_count} capture{summary.capture_count === 1 ? "" : "s"} merged)</h2>
+                    <p className="muted small">
+                      {summary.captures.map((cap) => cap.original_filename).join(", ")}
+                    </p>
                     {summary.parse_warnings.length > 0 && (
                       <ul className="warnings">{summary.parse_warnings.map((w) => <li key={w}>⚠ {w}</li>)}</ul>
                     )}
@@ -764,7 +811,7 @@ export default function App() {
                     <section className="panel">
                       <h2>Java crashes</h2>
                       <table className="fact-table">
-                        <thead><tr><th>Time</th><th>Package</th><th>Exception</th><th>Message</th><th>Root cause</th><th>Cite</th></tr></thead>
+                        <thead><tr><th>Time</th><th>Package</th><th>Exception</th><th>Message</th><th>Root cause</th><th>Capture</th><th>Cite</th></tr></thead>
                         <tbody>
                           {filtered.crash_events.map((cr, i) => (
                             <tr key={i}>
@@ -778,6 +825,7 @@ export default function App() {
                                   </>
                                 ) : <span className="muted">none</span>}
                               </td>
+                              <td><CaptureTag filename={cr.original_filename} /></td>
                               <td><SourceTag source={cr.source} /></td>
                             </tr>
                           ))}
@@ -790,12 +838,13 @@ export default function App() {
                     <section className="panel">
                       <h2>ANRs</h2>
                       <table className="fact-table">
-                        <thead><tr><th>Time</th><th>Package</th><th>Reason</th><th>PID</th></tr></thead>
+                        <thead><tr><th>Time</th><th>Package</th><th>Reason</th><th>PID</th><th>Capture</th></tr></thead>
                         <tbody>
                           {filtered.anrs.map((a, i) => (
                             <tr key={i}>
                               <td>{a.timestamp}</td><td>{a.package ?? <span className="muted">unattributed</span>}</td>
                               <td className="small">{a.reason}</td><td>{a.pid}</td>
+                              <td><CaptureTag filename={a.original_filename} /></td>
                             </tr>
                           ))}
                         </tbody>
@@ -807,7 +856,7 @@ export default function App() {
                     <section className="panel">
                       <h2>Native crashes (tombstones)</h2>
                       <table className="fact-table">
-                        <thead><tr><th>Time</th><th>Package / executable</th><th>Signal</th><th>Top frame</th></tr></thead>
+                        <thead><tr><th>Time</th><th>Package / executable</th><th>Signal</th><th>Top frame</th><th>Capture</th></tr></thead>
                         <tbody>
                           {filtered.tombstones.map((t, i) => (
                             <tr key={i}>
@@ -815,6 +864,7 @@ export default function App() {
                               <td>{t.package ?? <span className="muted">{t.executable ?? "unattributed"}</span>}</td>
                               <td>{t.signal_name}{t.signal_code ? ` (${t.signal_code})` : ""}</td>
                               <td className="small">{t.top_frame}</td>
+                              <td><CaptureTag filename={t.original_filename} /></td>
                             </tr>
                           ))}
                         </tbody>
@@ -840,25 +890,23 @@ export default function App() {
 
               {activeTab === "connectivity" && (
                 <>
-                  {summary.bt_hci_summary && (
-                    <section className="panel">
-                      <h2>Bluetooth HCI log</h2>
+                  {summary.bt_hci_summary.map((bt) => (
+                    <section className="panel" key={bt.capture_id}>
+                      <h2>Bluetooth HCI log <CaptureTag filename={bt.original_filename} /></h2>
                       <div className="stat-grid">
-                        <StatCard label="Total packets" value={summary.bt_hci_summary.total_packets} tone="default" />
-                        <StatCard label="Commands" value={summary.bt_hci_summary.command_count} tone="default" />
-                        <StatCard label="Events" value={summary.bt_hci_summary.event_count} tone="default" />
-                        <StatCard label="ACL data" value={summary.bt_hci_summary.acl_data_count} tone="default" />
+                        <StatCard label="Total packets" value={bt.total_packets} tone="default" />
+                        <StatCard label="Commands" value={bt.command_count} tone="default" />
+                        <StatCard label="Events" value={bt.event_count} tone="default" />
+                        <StatCard label="ACL data" value={bt.acl_data_count} tone="default" />
                       </div>
-                      <p className="muted small">
-                        {summary.bt_hci_summary.first_timestamp} &ndash; {summary.bt_hci_summary.last_timestamp}
-                      </p>
-                      {summary.bt_hci_summary.notable_events.length > 0 && (
+                      <p className="muted small">{bt.first_timestamp} &ndash; {bt.last_timestamp}</p>
+                      {bt.notable_events.length > 0 && (
                         <>
                           <h3>Notable events (disconnects &amp; non-success statuses)</h3>
                           <table className="fact-table">
                             <thead><tr><th>Time</th><th>Kind</th><th>Status</th><th>Reason</th><th>Handle</th></tr></thead>
                             <tbody>
-                              {summary.bt_hci_summary.notable_events.map((e, i) => (
+                              {bt.notable_events.map((e, i) => (
                                 <tr key={i}>
                                   <td className="small">{e.timestamp}</td><td>{e.kind.replace(/_/g, " ")}</td>
                                   <td className={e.status_name !== "Success" ? "warn-text" : ""}>{e.status_name}</td>
@@ -870,19 +918,20 @@ export default function App() {
                         </>
                       )}
                     </section>
-                  )}
+                  ))}
 
                   {filtered.wifi_events.filter((w) => w.kind === "disconnection").length > 0 && (
                     <section className="panel">
                       <h2>Wi-Fi disconnections</h2>
                       <table className="fact-table">
-                        <thead><tr><th>Time</th><th>SSID</th><th>Reason</th><th>Locally initiated</th><th>Cite</th></tr></thead>
+                        <thead><tr><th>Time</th><th>SSID</th><th>Reason</th><th>Locally initiated</th><th>Capture</th><th>Cite</th></tr></thead>
                         <tbody>
                           {filtered.wifi_events.filter((w) => w.kind === "disconnection").map((w, i) => (
                             <tr key={i}>
                               <td className="small">{w.timestamp}</td><td>{w.ssid}</td>
                               <td className={!w.locally_generated ? "warn-text" : ""}>{w.reason_name}</td>
                               <td>{String(w.locally_generated)}</td>
+                              <td><CaptureTag filename={w.original_filename} /></td>
                               <td><SourceTag source={w.source} /></td>
                             </tr>
                           ))}
@@ -891,85 +940,84 @@ export default function App() {
                     </section>
                   )}
 
-                  {summary.packet_capture_summary && (
-                    <section className="panel">
-                      <h2>Packet capture</h2>
+                  {summary.packet_capture_summary.map((p) => (
+                    <section className="panel" key={p.capture_id}>
+                      <h2>Packet capture <CaptureTag filename={p.original_filename} /></h2>
                       <div className="stat-grid">
-                        <StatCard label="Format" value={summary.packet_capture_summary.format.toUpperCase()} tone="default" />
-                        <StatCard label="Packets" value={summary.packet_capture_summary.total_packets} tone="default" />
-                        <StatCard label="Captured bytes" value={summary.packet_capture_summary.captured_bytes} tone="default" />
-                        <StatCard label="Truncated packets" value={summary.packet_capture_summary.truncated_packets} tone={summary.packet_capture_summary.truncated_packets > 0 ? "warning" : "ok"} />
-                        <StatCard label="Malformed records" value={summary.packet_capture_summary.malformed_packets} tone={summary.packet_capture_summary.malformed_packets > 0 ? "critical" : "ok"} />
+                        <StatCard label="Format" value={p.format.toUpperCase()} tone="default" />
+                        <StatCard label="Packets" value={p.total_packets} tone="default" />
+                        <StatCard label="Captured bytes" value={p.captured_bytes} tone="default" />
+                        <StatCard label="Truncated packets" value={p.truncated_packets} tone={p.truncated_packets > 0 ? "warning" : "ok"} />
+                        <StatCard label="Malformed records" value={p.malformed_packets} tone={p.malformed_packets > 0 ? "critical" : "ok"} />
                       </div>
                       <p className="muted small">
-                        {summary.packet_capture_summary.linktype_name} ({summary.packet_capture_summary.linktype})
-                        {summary.packet_capture_summary.first_timestamp && summary.packet_capture_summary.last_timestamp
-                          ? ` | ${summary.packet_capture_summary.first_timestamp} - ${summary.packet_capture_summary.last_timestamp}`
-                          : ""}
+                        {p.linktype_name} ({p.linktype})
+                        {p.first_timestamp && p.last_timestamp ? ` | ${p.first_timestamp} - ${p.last_timestamp}` : ""}
                       </p>
                     </section>
-                  )}
+                  ))}
 
-                  {summary.packet_analysis && (
-                    <section className="panel">
-                      <h2>Packet protocol analysis</h2>
+                  {summary.packet_analysis.map((pa) => (
+                    <section className="panel" key={pa.capture_id}>
+                      <h2>Packet protocol analysis <CaptureTag filename={pa.original_filename} /></h2>
                       <p className="muted small">
-                        Backend: {summary.packet_analysis.backend}{summary.packet_analysis.backend === "fallback" ? " (tshark not available on the server)" : ""} &middot; {summary.packet_analysis.link_layer} &middot; {summary.packet_analysis.packets_analyzed} packets analyzed
+                        Backend: {pa.backend}{pa.backend === "fallback" ? " (tshark not available on the server)" : ""} &middot; {pa.link_layer} &middot; {pa.packets_analyzed} packets analyzed
                       </p>
                       <div className="stat-grid">
-                        {summary.packet_analysis.retry_rate_pct !== null && (
-                          <StatCard label="Retry rate" value={`${summary.packet_analysis.retry_rate_pct}%`} tone={summary.packet_analysis.retry_rate_pct > 10 ? "warning" : "default"} />
+                        {pa.retry_rate_pct !== null && (
+                          <StatCard label="Retry rate" value={`${pa.retry_rate_pct}%`} tone={pa.retry_rate_pct > 10 ? "warning" : "default"} />
                         )}
-                        {summary.packet_analysis.rssi_min_dbm !== null && (
-                          <StatCard label="RSSI range (dBm)" value={`${summary.packet_analysis.rssi_min_dbm} to ${summary.packet_analysis.rssi_max_dbm}`} tone="default" />
+                        {pa.rssi_min_dbm !== null && (
+                          <StatCard label="RSSI range (dBm)" value={`${pa.rssi_min_dbm} to ${pa.rssi_max_dbm}`} tone="default" />
                         )}
-                        <StatCard label="Anomalies found" value={summary.packet_analysis.anomalies.length} tone={summary.packet_analysis.anomalies.length > 0 ? "warning" : "ok"} />
+                        <StatCard label="Anomalies found" value={pa.anomalies.length} tone={pa.anomalies.length > 0 ? "warning" : "ok"} />
                       </div>
-                      {summary.packet_analysis.frame_type_breakdown.length > 0 && (
+                      {pa.frame_type_breakdown.length > 0 && (
                         <>
                           <h3>Frame/protocol breakdown</h3>
                           <table className="fact-table">
                             <thead><tr><th>Type</th><th>Count</th></tr></thead>
                             <tbody>
-                              {summary.packet_analysis.frame_type_breakdown.slice(0, 12).map((f, i) => (
+                              {pa.frame_type_breakdown.slice(0, 12).map((f, i) => (
                                 <tr key={i}><td>{f.label}</td><td>{f.count}</td></tr>
                               ))}
                             </tbody>
                           </table>
                         </>
                       )}
-                      {summary.packet_analysis.identity_signals.length > 0 && (
+                      {pa.identity_signals.length > 0 && (
                         <>
                           <h3>Identity signals</h3>
                           <table className="fact-table">
                             <thead><tr><th>Kind</th><th>Value</th><th>Count</th></tr></thead>
                             <tbody>
-                              {summary.packet_analysis.identity_signals.slice(0, 15).map((s, i) => (
+                              {pa.identity_signals.slice(0, 15).map((s, i) => (
                                 <tr key={i}><td>{s.kind}</td><td className="small">{s.value}</td><td>{s.count}</td></tr>
                               ))}
                             </tbody>
                           </table>
                         </>
                       )}
-                      {summary.packet_analysis.anomalies.length > 0 && (
+                      {pa.anomalies.length > 0 && (
                         <>
                           <h3>Anomalies</h3>
                           <table className="fact-table">
                             <thead><tr><th>Kind</th><th>Detail</th><th>MAC / IP</th></tr></thead>
                             <tbody>
-                              {summary.packet_analysis.anomalies.slice(0, 20).map((a, i) => (
+                              {pa.anomalies.slice(0, 20).map((a, i) => (
                                 <tr key={i}><td className="warn-text">{a.kind.replace(/_/g, " ")}</td><td className="small">{a.detail}</td><td className="small">{a.mac_or_ip}</td></tr>
                               ))}
                             </tbody>
                           </table>
                         </>
                       )}
-                      <p className="muted small">{summary.packet_analysis.note}</p>
+                      <p className="muted small">{pa.note}</p>
                     </section>
-                  )}
+                  ))}
 
-                  {!summary.bt_hci_summary && !summary.packet_capture_summary && filtered.wifi_events.filter((w) => w.kind === "disconnection").length === 0 && (
-                    <div className="panel"><p className="muted">No Bluetooth, Wi-Fi, or packet-capture facts parsed for this capture.</p></div>
+                  {summary.bt_hci_summary.length === 0 && summary.packet_capture_summary.length === 0
+                    && filtered.wifi_events.filter((w) => w.kind === "disconnection").length === 0 && (
+                    <div className="panel"><p className="muted">No Bluetooth, Wi-Fi, or packet-capture facts parsed for any linked capture.</p></div>
                   )}
                 </>
               )}
@@ -979,9 +1027,9 @@ export default function App() {
                   {filtered.top_battery_consumers.length > 0 ? (
                     <section className="panel">
                       <h2>Top battery consumers</h2>
-                      <p className="muted small">Estimated mAh per app/UID for this capture. Package is unattributed (not guessed) for shared system UIDs.</p>
+                      <p className="muted small">Estimated mAh per app/UID, across all linked captures. Package is unattributed (not guessed) for shared system UIDs.</p>
                       <table className="fact-table">
-                        <thead><tr><th>App / UID</th><th>Total (mAh)</th><th>Breakdown</th><th>Cite</th></tr></thead>
+                        <thead><tr><th>App / UID</th><th>Total (mAh)</th><th>Breakdown</th><th>Capture</th><th>Cite</th></tr></thead>
                         <tbody>
                           {filtered.top_battery_consumers.map((b, i) => (
                             <tr key={i}>
@@ -990,6 +1038,7 @@ export default function App() {
                               <td className="small">
                                 {Object.entries(b.components_mah).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(", ")}
                               </td>
+                              <td><CaptureTag filename={b.original_filename} /></td>
                               <td><SourceTag source={b.source} /></td>
                             </tr>
                           ))}
@@ -997,7 +1046,7 @@ export default function App() {
                       </table>
                     </section>
                   ) : (
-                    <div className="panel"><p className="muted">No battery stats parsed or matched for this capture.</p></div>
+                    <div className="panel"><p className="muted">No battery stats parsed or matched for any linked capture.</p></div>
                   )}
                 </>
               )}
@@ -1013,12 +1062,13 @@ export default function App() {
                     <h2>Media sessions</h2>
                     {filtered.media_sessions.length === 0 ? <p className="muted small">No media sessions parsed or matched.</p> : (
                       <table className="fact-table">
-                        <thead><tr><th>Package</th><th>State</th><th>Active</th><th>Position (ms)</th><th>Cite</th></tr></thead>
+                        <thead><tr><th>Package</th><th>State</th><th>Active</th><th>Position (ms)</th><th>Capture</th><th>Cite</th></tr></thead>
                         <tbody>
                           {filtered.media_sessions.map((m, i) => (
                             <tr key={i}>
                               <td>{m.package}</td><td>{m.playback_state ?? "unknown"}</td>
                               <td>{String(m.active)}</td><td>{m.position_ms}</td>
+                              <td><CaptureTag filename={m.original_filename} /></td>
                               <td><SourceTag source={m.source} /></td>
                             </tr>
                           ))}
@@ -1113,6 +1163,10 @@ export default function App() {
         .device-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px dashed #1c2433; font-size: 13px; }
         .device-key { color: var(--muted); flex-shrink: 0; }
         .device-val { text-align: right; word-break: break-word; font-family: ui-monospace, monospace; font-size: 12px; }
+        .device-info-block { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--panel-border); }
+        .device-info-block:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+
+        .capture-tag { display: inline-block; background: #1a2337; color: var(--blue); font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
 
         .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
         .stat { background: #0e1420; border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px; }

@@ -13,11 +13,11 @@ from app.models.db_models import Capture, Device, Investigation, InvestigationCa
 from app.services.ingestion import parse_capture_file
 from app.services.persistence import persist_capture
 from app.services.reasoning import diagnose, diagnose_investigation
-from app.services.summary import build_capture_summary, capture_severity
+from app.services.summary import build_capture_summary, build_merged_summary, capture_severity
 
 router = APIRouter()
 
-SUPPORTED_UPLOAD_SUFFIXES = {".zip", ".txt", ".pcap", ".pcapng", ".btt"}
+SUPPORTED_UPLOAD_SUFFIXES = {".zip", ".txt", ".pcap", ".pcapng"}
 
 
 @router.post("/captures")
@@ -29,7 +29,7 @@ async def upload_capture(
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
-        raise HTTPException(400, "Expected one of: .zip, .txt, .pcap, .pcapng, .btt")
+        raise HTTPException(400, "Expected one of: .zip, .txt, .pcap, .pcapng")
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)
@@ -95,6 +95,21 @@ def list_investigation_captures(investigation_label: str, session: Session = Dep
     return [{**c.model_dump(), "severity": capture_severity(session, c.id)} for c in captures]
 
 
+@router.get("/investigations/{investigation_label}/summary")
+def investigation_merged_summary(investigation_label: str, session: Session = Depends(get_session)):
+    investigation = session.exec(
+        select(Investigation).where(Investigation.label == investigation_label)
+    ).first()
+    if investigation is None:
+        raise HTTPException(404, "Unknown investigation")
+    capture_ids = session.exec(
+        select(Capture.id)
+        .join(InvestigationCaptureLink, InvestigationCaptureLink.capture_id == Capture.id)
+        .where(InvestigationCaptureLink.investigation_id == investigation.id)
+    ).all()
+    return build_merged_summary(session, capture_ids)
+
+
 @router.get("/devices/{device_label}/captures")
 def list_captures(device_label: str, session: Session = Depends(get_session)):
     device = session.exec(select(Device).where(Device.label == device_label)).first()
@@ -102,6 +117,15 @@ def list_captures(device_label: str, session: Session = Depends(get_session)):
         raise HTTPException(404, "Unknown device")
     captures = session.exec(select(Capture).where(Capture.device_id == device.id)).all()
     return [{**c.model_dump(), "severity": capture_severity(session, c.id)} for c in captures]
+
+
+@router.get("/devices/{device_label}/summary")
+def device_merged_summary(device_label: str, session: Session = Depends(get_session)):
+    device = session.exec(select(Device).where(Device.label == device_label)).first()
+    if device is None:
+        raise HTTPException(404, "Unknown device")
+    capture_ids = session.exec(select(Capture.id).where(Capture.device_id == device.id)).all()
+    return build_merged_summary(session, capture_ids)
 
 
 @router.get("/captures/{capture_id}/summary")

@@ -308,3 +308,91 @@ def build_capture_summary(session: Session, capture_id: int) -> dict:
             } for e in focus_stack_rows
         ],
     }
+
+
+def _tag_rows(rows: list[dict], capture_id: int, original_filename: str) -> list[dict]:
+    return [{**row, "capture_id": capture_id, "original_filename": original_filename} for row in rows]
+
+
+def build_merged_summary(session: Session, capture_ids: list[int]) -> dict:
+    """Combines build_capture_summary() across every capture in capture_ids
+    into one dashboard payload -- every row is tagged with which capture it
+    actually came from (capture_id + original_filename), the same principle
+    already used for device-wide evidence in reasoning.py's diagnosis
+    bundle. Built by reusing build_capture_summary() per capture rather than
+    re-querying, so this can't drift from what the single-capture view
+    already shows.
+
+    bt_hci_summary / packet_capture_summary / packet_analysis become LISTS
+    (one entry per capture that has that data) instead of a single object,
+    since more than one capture can each have their own -- callers that
+    only ever handled the single-capture shape need updating, this isn't
+    a drop-in replacement for build_capture_summary()'s return shape.
+    """
+    per_capture = [s for cid in capture_ids if (s := build_capture_summary(session, cid))]
+    if not per_capture:
+        return {}
+
+    merged_counts: dict[str, int] = {}
+    parse_warnings: list[str] = []
+    device_infos = []
+    crash_events, tombstones, anrs, wifi_events = [], [], [], []
+    top_battery_consumers, timeline, media_sessions, focus_stack = [], [], [], []
+    bt_hci_summaries, packet_capture_summaries, packet_analyses = [], [], []
+    freeze_offenders_by_pkg: dict[str, dict] = {}
+
+    for cap in per_capture:
+        cid, fname = cap["capture_id"], cap["original_filename"]
+        for k, v in cap["counts"].items():
+            merged_counts[k] = merged_counts.get(k, 0) + v
+        for w in cap["parse_warnings"]:
+            parse_warnings.append(f"[{fname}] {w}")
+        if cap["device_info"]:
+            device_infos.append({**cap["device_info"], "capture_id": cid, "original_filename": fname})
+        crash_events.extend(_tag_rows(cap["crash_events"], cid, fname))
+        tombstones.extend(_tag_rows(cap["tombstones"], cid, fname))
+        anrs.extend(_tag_rows(cap["anrs"], cid, fname))
+        wifi_events.extend(_tag_rows(cap["wifi_events"], cid, fname))
+        top_battery_consumers.extend(_tag_rows(cap["top_battery_consumers"], cid, fname))
+        timeline.extend(_tag_rows(cap["timeline"], cid, fname))
+        media_sessions.extend(_tag_rows(cap["media_sessions"], cid, fname))
+        focus_stack.extend(_tag_rows(cap["focus_stack"], cid, fname))
+        if cap["bt_hci_summary"]:
+            bt_hci_summaries.append({**cap["bt_hci_summary"], "capture_id": cid, "original_filename": fname})
+        if cap["packet_capture_summary"]:
+            packet_capture_summaries.append({**cap["packet_capture_summary"], "capture_id": cid, "original_filename": fname})
+        if cap["packet_analysis"]:
+            packet_analyses.append({**cap["packet_analysis"], "capture_id": cid, "original_filename": fname})
+        for o in cap["top_freeze_offenders"]:
+            entry = freeze_offenders_by_pkg.setdefault(o["package"], {"package": o["package"], "freezes": 0, "unfreezes": 0})
+            entry["freezes"] += o["freezes"]
+            entry["unfreezes"] += o["unfreezes"]
+
+    timeline.sort(key=lambda e: e["timestamp"])
+    top_battery_consumers.sort(key=lambda b: b["total_mah"], reverse=True)
+    top_freeze_offenders = sorted(
+        freeze_offenders_by_pkg.values(), key=lambda o: o["freezes"] + o["unfreezes"], reverse=True
+    )[:10]
+
+    return {
+        "capture_count": len(per_capture),
+        "captures": [
+            {"capture_id": cap["capture_id"], "original_filename": cap["original_filename"], "ingested_at": cap["ingested_at"]}
+            for cap in per_capture
+        ],
+        "parse_warnings": parse_warnings,
+        "device_infos": device_infos,
+        "counts": merged_counts,
+        "top_freeze_offenders": top_freeze_offenders,
+        "crash_events": crash_events,
+        "tombstones": tombstones,
+        "anrs": anrs,
+        "bt_hci_summary": bt_hci_summaries,
+        "packet_capture_summary": packet_capture_summaries,
+        "packet_analysis": packet_analyses,
+        "wifi_events": wifi_events,
+        "top_battery_consumers": top_battery_consumers[:15],
+        "timeline": timeline,
+        "media_sessions": media_sessions,
+        "focus_stack": focus_stack,
+    }

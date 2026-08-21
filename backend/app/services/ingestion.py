@@ -256,20 +256,6 @@ def parse_pcap_file(path: str | Path) -> ParsedCapture:
     return capture
 
 
-def parse_btt_file(path: str | Path) -> ParsedCapture:
-    data = Path(path).read_bytes()
-    capture = ParsedCapture()
-    if data.startswith(b"btsnoop\0"):
-        capture.bt_hci_summary = parse_bt_hci_log(data)
-        capture.parse_warnings.append("Parsed .btt as btsnoop/HCI bytes")
-    else:
-        capture.parse_warnings.append(
-            "Ellisys .btt upload accepted, but native .btt decoding is not implemented yet; "
-            "export btsnoop/pcap from Ellisys or provide a sample/spec to add full decoding"
-        )
-    return capture
-
-
 def parse_capture_file(path: str | Path, filename: str | None = None) -> ParsedCapture:
     suffix = Path(filename or path).suffix.lower()
     if suffix == ".zip":
@@ -278,6 +264,4 @@ def parse_capture_file(path: str | Path, filename: str | None = None) -> ParsedC
         return parse_bugreport_txt(path)
     if suffix in {".pcap", ".pcapng"}:
         return parse_pcap_file(path)
-    if suffix == ".btt":
-        return parse_btt_file(path)
-    raise ValueError("Unsupported upload type; expected .zip, .txt, .pcap, .pcapng, or .btt")
+    raise ValueError("Unsupported upload type; expected .zip, .txt, .pcap, or .pcapng")
